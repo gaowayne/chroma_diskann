@@ -41,34 +41,39 @@ git clone --branch main --single-branch https://github.com/gaowayne/chroma_diska
 cd chroma_baseline
 git switch --detach e5c22977da46f9410c2e8f2aea54c45d84d29299
 apt-get update
-apt-get install -y build-essential cmake pkg-config libssl-dev libclang-dev protobuf-compiler python3-dev git curl ca-certificates
+apt-get install -y build-essential cmake pkg-config libssl-dev libclang-dev protobuf-compiler python3-dev python3-venv git curl ca-certificates
 ```
 
 If `chroma_baseline` already exists, inspect it with `git status` and reuse it
 only after confirming its revision; do not delete or overwrite existing work.
-Install Rust and uv only when not already available, then create a Linux-native
-virtual environment. The Rust CI uses the stable toolchain.
+Install Rust only when not already available, then create a Linux-native virtual
+environment with Python's standard `venv` module. No uv is needed. Use Python 3.9
+or later; Python 3.10 through 3.12 are suitable starting points. If `python3`
+is older than 3.9, select a supported interpreter before creating the environment.
+Reuse an existing compatible Linux virtual environment instead of recreating it.
+The Rust CI uses the stable toolchain.
 
 ```bash
 if ! command -v rustup >/dev/null; then
   curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/chroma-rustup-init.sh
   sh /tmp/chroma-rustup-init.sh -y --profile minimal
 fi
-export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export PATH="$HOME/.cargo/bin:$PATH"
 rustup toolchain install stable --profile minimal
 rustup override set stable
-if ! command -v uv >/dev/null; then
-  curl --proto '=https' --tlsv1.2 -fsSL https://astral.sh/uv/install.sh -o /tmp/chroma-uv-install.sh
-  sh /tmp/chroma-uv-install.sh
-fi
-uv venv .venv --python 3.11
+python3 --version
+python3 -m venv .venv
 source .venv/bin/activate
-uv pip install pip 'maturin>=1.8,<2' -r pyproject.toml
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install 'maturin>=1.8,<2' build
+python -m pip install -r requirements.txt
 set -o pipefail
-CARGO_BUILD_JOBS=4 maturin develop --release --locked 2>&1 | tee /tmp/chroma-baseline-build.log
+CARGO_BUILD_JOBS=4 python -m maturin develop --release --locked 2>&1 | tee /tmp/chroma-baseline-build.log
 ```
 
 Run Maturin from the project root: it selects `rust/python_bindings/Cargo.toml`.
+`pip -r` reads `requirements.txt`, not `pyproject.toml`; Maturin also installs
+the package dependencies declared by the project when installing the build.
 Do not build `rust/diskann_bindings`. Verify the compiled bindings, default API,
 vector insertion, nearest-neighbor query, and reopening without downloading an
 embedding model:
