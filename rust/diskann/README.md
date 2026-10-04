@@ -37,12 +37,51 @@ Do not mutate index files while readers are open.
 Updates, deletion, metadata filters, Chroma ID mapping, log checkpoints, snapshot
 replacement and Chroma API routing are not implemented in this crate yet.
 
+## Minimal build/query demo
+
+`examples/mvp.rs` is a small CLI demo using the existing native library unchanged.
+It creates 512 synthetic four-dimensional vectors with IDs `doc-0000` through
+`doc-0511`. The demo stores its ID list next to the native index and loads it in
+the query process; it does not regenerate the mapping during queries. This is
+demo-level ID handling, not a Chroma collection API or mutable data layer.
+
+After synchronizing this example to Linux, run from the repository root:
+
+```bash
+demo_root="$(mktemp -d /tmp/chroma-diskann-mvp-XXXXXX)"
+index_dir="$demo_root/index"
+cargo +1.97.1 run --manifest-path rust/diskann/Cargo.toml --locked --example mvp -- build "$index_dir" l2
+cargo +1.97.1 run --manifest-path rust/diskann/Cargo.toml --locked --example mvp -- query "$index_dir"
+cargo +1.97.1 run --manifest-path rust/diskann/Cargo.toml --locked --example mvp -- query "$index_dir" '[0.1, 0.2, 0.3, 0.4]'
+```
+
+The build prints JSON with `status: "built"`, the point count and metric. The
+default query reads the stored vector for `doc-0017`; its nearest result should
+be `doc-0017` with distance close to zero. Query output contains the query vector,
+five `{id, distance}` results, and the native comparison count. Custom queries
+must be JSON arrays of four finite numbers; cosine also rejects zero vectors.
+
+For cosine, use a fresh directory and replace `l2` with `cosine` in the build
+command. Existing directories are never overwritten. If the build stops before
+writing the ID file, the demo query refuses to open it; preserve the failed
+directory and use a fresh one for another build attempt.
+
+The original `smoke` example and `validate_linux.sh` remain unchanged. Test the
+new MVP's ID checks and real native build/reopen/query separately:
+
+```bash
+cargo +1.97.1 test --manifest-path rust/diskann/Cargo.toml --locked --example mvp -- --nocapture --test-threads=1
+```
+
+The new example has only been statically checked locally; its Linux compilation
+and execution are still pending. It adds no HNSW changes or dependencies.
+
 ## Linux verification
 
 The integration has three gates:
 
-1. Build and validate the real native index on Linux. The tooling for this gate
-  is provided here; execution is still pending.
+1. Build and validate the real native index on Linux. The original library and
+  smoke baseline passed on 2026-10-04; new examples need their own verification.
 2. Implement DiskANN-only user-ID mapping, filtering, mutable data and durable
   log/checkpoint handling, with recovery tests.
 3. Add an explicit Chroma entry point without rewriting the existing HNSW path,
@@ -159,5 +198,7 @@ step into the pinned Microsoft implementation only after locating the phase.
 Tests build real 512-vector L2 and cosine indexes, check queries against exact
 distance calculations, reopen files, read original vectors, check invalid input,
 and verify existing directories are not overwritten. They are not ignored and
-do not substitute a fake index. Linux compilation and execution are still pending;
-only dependency resolution and source-level checks have been performed.
+do not substitute a fake index. User-provided Linux output for the original
+baseline recorded four passing library tests and recall@10 of 1.0000 for both
+L2 and cosine on the 512-vector smoke workload. This does not validate new MVP
+changes or imply production-scale performance or complete Chroma integration.
