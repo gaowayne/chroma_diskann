@@ -22,6 +22,95 @@ for MacOS `brew install protobuf`
 
 You can also install `chromadb` the `pypi` package locally and in editable mode with `pip install -e .`.
 
+## Single-node Rust/HNSW baseline
+
+Build the original Chroma backend before testing an optional index backend.
+This path uses the default Rust bindings and HNSW, not the experimental DiskANN
+client, and does not need Docker, Kubernetes, or Tilt.
+
+The following commands assume Ubuntu/Debian on the Linux build server and a
+root shell. On other distributions, install equivalent development packages.
+Use a separate checkout and data directory so the baseline does not modify the
+DiskANN checkout or its collections. The pre-DiskANN baseline in this fork is
+`e5c22977da46f9410c2e8f2aea54c45d84d29299`.
+
+```bash
+mkdir -p /mnt/ps1010/wayne/vectordbstudy/chromadiskann
+cd /mnt/ps1010/wayne/vectordbstudy/chromadiskann
+git clone --branch main --single-branch https://github.com/gaowayne/chroma_diskann.git chroma_baseline
+cd chroma_baseline
+git switch --detach e5c22977da46f9410c2e8f2aea54c45d84d29299
+apt-get update
+apt-get install -y build-essential cmake pkg-config libssl-dev libclang-dev protobuf-compiler python3-dev git curl ca-certificates
+```
+
+If `chroma_baseline` already exists, inspect it with `git status` and reuse it
+only after confirming its revision; do not delete or overwrite existing work.
+Install Rust and uv only when not already available, then create a Linux-native
+virtual environment. The Rust CI uses the stable toolchain.
+
+```bash
+if ! command -v rustup >/dev/null; then
+  curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/chroma-rustup-init.sh
+  sh /tmp/chroma-rustup-init.sh -y --profile minimal
+fi
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+rustup toolchain install stable --profile minimal
+rustup override set stable
+if ! command -v uv >/dev/null; then
+  curl --proto '=https' --tlsv1.2 -fsSL https://astral.sh/uv/install.sh -o /tmp/chroma-uv-install.sh
+  sh /tmp/chroma-uv-install.sh
+fi
+uv venv .venv --python 3.11
+source .venv/bin/activate
+uv pip install pip 'maturin>=1.8,<2' -r pyproject.toml
+set -o pipefail
+CARGO_BUILD_JOBS=4 maturin develop --release --locked 2>&1 | tee /tmp/chroma-baseline-build.log
+```
+
+Run Maturin from the project root: it selects `rust/python_bindings/Cargo.toml`.
+Do not build `rust/diskann_bindings`. Verify the compiled bindings, default API,
+vector insertion, nearest-neighbor query, and reopening without downloading an
+embedding model:
+
+```bash
+python - <<'PY'
+import chromadb
+import chromadb_rust_bindings
+from chromadb.config import Settings
+
+settings = Settings(anonymized_telemetry=False)
+assert settings.chroma_api_impl == "chromadb.api.rust.RustBindingsAPI"
+print("Python package:", chromadb.__file__)
+print("Native bindings:", chromadb_rust_bindings.__file__)
+client = chromadb.PersistentClient("./baseline-data", settings)
+collection = client.get_or_create_collection("baseline-smoke", embedding_function=None)
+collection.upsert(ids=["first", "second"], embeddings=[[1.0, 0.0], [0.0, 1.0]])
+result = collection.query(query_embeddings=[[1.0, 0.0]], n_results=1)
+assert result["ids"] == [["first"]], result
+client.close()
+client = chromadb.PersistentClient("./baseline-data", settings)
+collection = client.get_collection("baseline-smoke", embedding_function=None)
+assert collection.count() == 2
+assert collection.query(query_embeddings=[[1.0, 0.0]], n_results=1)["ids"] == [["first"]]
+client.close()
+print("BASELINE PASS: default Rust/HNSW query and persistence")
+PY
+```
+
+Optionally start the server in the foreground, using a different data directory:
+
+```bash
+chroma run --path ./baseline-server-data --host 127.0.0.1 --port 8000
+```
+
+From another terminal on the same server, verify it with
+`curl -fsS http://127.0.0.1:8000/api/v2/heartbeat`. If port 8000 is occupied, use
+another free port in both commands. Keep loopback binding unless authentication
+and network access controls have been configured. To access it from your local
+machine, use an SSH tunnel such as `ssh -L 18000:127.0.0.1:8000 root@10.74.40.88`
+and connect to `http://127.0.0.1:18000` locally.
+
 ## Local dev setup for distributed chroma
 
 We use tilt for providing local dev setup. Tilt is an open source project
