@@ -4,6 +4,8 @@ An independent Rust crate for building and reading immutable `diskann-disk`
 indexes. It does not modify, wrap, or depend on Chroma's HNSW implementation.
 It is deliberately outside Chroma's default Cargo workspace and has its own
 lockfile. It is not yet selectable through the Chroma collection API.
+The optional `chroma-client` feature uses the existing Rust SDK to export a
+paused Chroma collection into a separately queried DiskANN snapshot.
 
 ## Implemented
 
@@ -25,7 +27,7 @@ smaller batches are rejected rather than silently routed to another algorithm.
 PQ bytes are capped at the vector dimensionality. Non-finite vectors and zero
 cosine vectors are rejected.
 
-All APIs are blocking. Create, use and drop readers on a blocking worker, not
+The core disk-index APIs are blocking. Create, use and drop readers on a blocking worker, not
 inside a Tokio async task: the native implementation owns a runtime. Searches
 on one reader are serialized. Dropping the reader releases its native resources.
 
@@ -34,8 +36,9 @@ Native files are synchronized before the manifest is published. A failed build
 may leave a partial directory without a valid manifest; it is not a usable index.
 Do not mutate index files while readers are open.
 
-Updates, deletion, metadata filters, Chroma ID mapping, log checkpoints, snapshot
-replacement and Chroma API routing are not implemented in this crate yet.
+Updates, deletion, metadata filters, log checkpoints, live snapshot replacement
+and Chroma API backend routing are not implemented. The optional snapshot bridge
+maps copied Chroma IDs, but does not implement an online Chroma data layer.
 
 ## Minimal build/query demo
 
@@ -73,8 +76,103 @@ new MVP's ID checks and real native build/reopen/query separately:
 cargo +1.97.1 test --manifest-path rust/diskann/Cargo.toml --locked --example mvp -- --nocapture --test-threads=1
 ```
 
-The new example has only been statically checked locally; its Linux compilation
-and execution are still pending. It adds no HNSW changes or dependencies.
+User-provided Linux output on 2026-10-04 confirmed both MVP tests passed, including
+L2/cosine build, reopened ID mapping and default/custom queries. This result does
+not cover the newer optional Chroma snapshot integration below.
+
+## Minimal Chroma integration
+
+This opt-in bridge uses the repository's `chroma` Rust SDK. It leaves Chroma's
+normal collection query path and all HNSW implementation code unchanged:
+
+```text
+Chroma collection.get(ids + embeddings)
+  -> build_from_collection (paged read, then blocking native build)
+  -> native DiskANN files + source collection information + ID mapping
+  -> ChromaSnapshot::open/search (no Chroma connection required)
+```
+
+The exporter requests embeddings in pages of 256 and buffers the complete
+collection in memory. It checks page sizes, final count and ID uniqueness before
+building. Pause all writes during export: these checks cannot detect same-count
+updates and are not transactional snapshot isolation. Later source changes are
+not reflected in the saved snapshot. Metadata/documents and filters are excluded.
+
+The feature defaults to off. It adds the existing client/protocol dependencies,
+not the HNSW index or server executor. Keep the full repository checkout because
+the SDK is a path dependency and its protocol build uses repository IDL files.
+New integration code has not been compiled or run on Linux yet.
+
+### 1. Compile the optional feature
+
+Synchronize the current source and lockfile to Linux first. The SDK's protocol
+build also requires `protoc` (`protobuf-compiler` on Ubuntu), in addition to the
+Rust and native build prerequisites already used for the base module:
+
+```bash
+protoc --version
+cargo +1.97.1 test --manifest-path rust/diskann/Cargo.toml --locked --features chroma-client --lib --no-run
+cargo +1.97.1 test --manifest-path rust/diskann/Cargo.toml --locked --features chroma-client --lib chroma_snapshot::tests -- --nocapture --test-threads=1
+```
+
+These two snapshot tests validate ID mapping and native persistence without a
+server. They do not validate HTTP export; perform the steps below for that.
+
+### 2. Prepare a Chroma server
+
+Use a running Chroma HTTP server compatible with this checkout's v2 API. The
+example uses unauthenticated local development options from `CHROMA_ENDPOINT`,
+`CHROMA_TENANT` and `CHROMA_DATABASE`. It does not install or launch a server.
+
+If the Chroma CLI is already installed, an isolated server can be started in a
+separate Linux terminal (use another port if 8000 is occupied):
+
+```bash
+chroma_data="$(mktemp -d /tmp/chroma-source-XXXXXX)"
+chroma run --host 127.0.0.1 --port 8000 --path "$chroma_data"
+```
+
+### 3. Create a small source collection
+
+From the repository root, with the server running:
+
+```bash
+export CHROMA_ENDPOINT=http://127.0.0.1:8000
+export CHROMA_TENANT=default_tenant
+export CHROMA_DATABASE=default_database
+collection="diskann-demo-$(date +%s)"
+cargo +1.97.1 run --manifest-path rust/diskann/Cargo.toml --locked --features chroma-client --example chroma -- seed "$collection"
+```
+
+`seed` creates a new collection and inserts 512 four-dimensional vectors through
+the Chroma SDK. It refuses to reuse an existing collection. Expect `status:
+"seeded"` and `points: 512`. If seeding fails after collection creation, preserve
+that collection and use a new name for the next attempt. For real data, skip this
+step and set `collection` to an existing collection with at least 256 embeddings.
+
+### 4. Export and build DiskANN
+
+```bash
+snapshot_root="$(mktemp -d /tmp/chroma-snapshot-XXXXXX)"
+snapshot_dir="$snapshot_root/index"
+cargo +1.97.1 run --manifest-path rust/diskann/Cargo.toml --locked --features chroma-client --example chroma -- build "$collection" "$snapshot_dir" l2
+```
+
+`build` performs only reads against Chroma. Expect `status: "built"` with the
+source collection ID, name, tenant, database, vector count and dimension. Use
+`cosine` instead of `l2` to choose the snapshot's distance metric explicitly.
+The output directory must be new; failures may leave an incomplete snapshot.
+
+### 5. Query the saved snapshot
+
+```bash
+cargo +1.97.1 run --manifest-path rust/diskann/Cargo.toml --locked --features chroma-client --example chroma -- query "$snapshot_dir" '[0.1, 0.2, 0.3, 0.4]'
+```
+
+The query only opens local snapshot files. Expect five `{id, distance}` results
+using IDs copied from Chroma, plus native comparison statistics and source
+information. The source server need not remain available for this command.
+This is an offline integration demo, not a replacement for `collection.query()`.
 
 ## Linux verification
 
@@ -200,5 +298,6 @@ distance calculations, reopen files, read original vectors, check invalid input,
 and verify existing directories are not overwritten. They are not ignored and
 do not substitute a fake index. User-provided Linux output for the original
 baseline recorded four passing library tests and recall@10 of 1.0000 for both
-L2 and cosine on the 512-vector smoke workload. This does not validate new MVP
-changes or imply production-scale performance or complete Chroma integration.
+L2 and cosine on the 512-vector smoke workload. The two MVP tests later passed
+as well. Neither result validates the new Chroma HTTP bridge, production-scale
+performance or complete Chroma backend integration.

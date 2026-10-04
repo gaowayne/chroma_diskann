@@ -34,6 +34,9 @@ use diskann_vector::distance::Metric;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[cfg(feature = "chroma-client")]
+pub mod chroma_snapshot;
+
 pub const DISKANN_REVISION: &str = "bceaf45dc6aa694485553816b448d7b8f55df393";
 const FORMAT_VERSION: u32 = 1;
 const INDEX_PREFIX: &str = "index";
