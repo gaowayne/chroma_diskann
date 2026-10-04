@@ -44,6 +44,7 @@ SEGMENT_TYPE_IMPLS = {
     SegmentType.SQLITE: "chromadb.segment.impl.metadata.sqlite.SqliteMetadataSegment",
     SegmentType.HNSW_LOCAL_MEMORY: "chromadb.segment.impl.vector.local_hnsw.LocalHnswSegment",
     SegmentType.HNSW_LOCAL_PERSISTED: "chromadb.segment.impl.vector.local_persistent_hnsw.PersistentLocalHnswSegment",
+    SegmentType.DISKANN_LOCAL_PERSISTED: "chromadb.segment.impl.vector.local_diskann.LocalDiskAnnSegment",
 }
 
 
@@ -157,7 +158,10 @@ class LocalSegmentManager(SegmentManager):
         segments = self._sysdb.get_segments(collection=collection_id)
         for segment in segments:
             if segment["id"] in self._instances:
-                if segment["type"] == SegmentType.HNSW_LOCAL_PERSISTED.value:
+                if segment["type"] in (
+                    SegmentType.HNSW_LOCAL_PERSISTED.value,
+                    SegmentType.DISKANN_LOCAL_PERSISTED.value,
+                ):
                     instance = self.get_segment(collection_id, VectorReader)
                     instance.delete()
                 elif segment["type"] == SegmentType.SQLITE.value:

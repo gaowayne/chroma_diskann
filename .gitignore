@@ -26,6 +26,8 @@ server.authz
 server.authn
 
 .venv
+.venv-diskann/
+.diskann-validation/
 venv
 .env
 .chroma

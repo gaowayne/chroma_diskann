@@ -1,4 +1,4 @@
-from typing import Optional, Sequence
+from typing import Optional, Sequence, cast
 
 from overrides import overrides
 
@@ -6,7 +6,7 @@ from chromadb.api.types import GetResult, Metadata, QueryResult
 from chromadb.config import System
 from chromadb.execution.executor.abstract import Executor
 from chromadb.execution.expression.plan import CountPlan, GetPlan, KNNPlan
-from chromadb.segment import MetadataReader, VectorReader
+from chromadb.segment import MetadataReader, SegmentManager, VectorReader
 from chromadb.segment.impl.manager.local import LocalSegmentManager
 from chromadb.types import Collection, VectorQuery, VectorQueryResult
 
@@ -45,7 +45,7 @@ class LocalExecutor(Executor):
 
     def __init__(self, system: System):
         super().__init__(system)
-        self._manager = self.require(LocalSegmentManager)
+        self._manager = cast(LocalSegmentManager, self.require(SegmentManager))
 
     @overrides
     def count(self, plan: CountPlan) -> int:

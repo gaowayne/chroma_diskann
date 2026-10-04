@@ -1,0 +1,21 @@
+[package]
+name = "chroma-diskann-native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+name = "chroma_diskann_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+diskann = { git = "https://github.com/microsoft/DiskANN.git", rev = "bceaf45dc6aa694485553816b448d7b8f55df393" }
+diskann-disk = { git = "https://github.com/microsoft/DiskANN.git", rev = "bceaf45dc6aa694485553816b448d7b8f55df393" }
+diskann-providers = { git = "https://github.com/microsoft/DiskANN.git", rev = "bceaf45dc6aa694485553816b448d7b8f55df393" }
+diskann-vector = { git = "https://github.com/microsoft/DiskANN.git", rev = "bceaf45dc6aa694485553816b448d7b8f55df393" }
+pyo3 = { version = "0.24.1", features = ["extension-module"] }
+
+[profile.release]
+debug = 1

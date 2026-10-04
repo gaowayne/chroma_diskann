@@ -58,6 +58,7 @@ class SharedSystemClient:
         elif api_impl in [
             "chromadb.api.segment.SegmentAPI",
             "chromadb.api.rust.RustBindingsAPI",
+            "chromadb.api.diskann.DiskAnnAPI",
         ]:
             if settings.is_persistent:
                 identifier = settings.persist_directory

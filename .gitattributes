@@ -2,3 +2,4 @@
 *_pb2_grpc.py* linguist-generated
 go/database/**/db/** linguist-generated=true
 go/pkg/proto/** linguist-generated=true
+bin/validate_diskann_linux.sh text eol=lf
