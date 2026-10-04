@@ -7,7 +7,12 @@ edition = "2021"
 name = "frontend_service"
 path = "src/bin/frontend_service.rs"
 
+[features]
+default = []
+diskann = ["dep:chroma-diskann"]
+
 [dependencies]
+chroma-diskann = { path = "../diskann", features = ["chroma-client"], optional = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }

@@ -1,6 +1,8 @@
 use std::{path::Path, sync::Arc};
 
 pub mod config;
+#[cfg(feature = "diskann")]
+mod diskann;
 #[allow(dead_code)]
 pub mod executor;
 pub mod get_collection_with_segments_provider;
@@ -63,6 +65,12 @@ pub async fn frontend_service_entrypoint_with_config_system_registry(
     registry: Registry,
     config: &FrontendServerConfig,
 ) {
+    #[cfg(feature = "diskann")]
+    diskann::validate_configuration().expect("Invalid DiskANN snapshot configuration");
+    #[cfg(not(feature = "diskann"))]
+    if std::env::var_os("CHROMA_DISKANN_SNAPSHOTS").is_some() {
+        panic!("CHROMA_DISKANN_SNAPSHOTS requires the chroma-frontend/diskann feature");
+    }
     let mut fe_cfg = config.frontend.clone();
     if let (Some(sql_cfg), Some(local_segman_cfg)) =
         (fe_cfg.sqlitedb.as_mut(), fe_cfg.segment_manager.as_mut())

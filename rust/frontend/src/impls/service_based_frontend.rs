@@ -1825,6 +1825,9 @@ impl ServiceBasedFrontend {
         records: Vec<OperationRecord>,
         cmek: Option<Cmek>,
     ) -> Result<(), PushLogsError> {
+        #[cfg(feature = "diskann")]
+        crate::diskann::ensure_writable(collection_id)
+            .map_err(|error| PushLogsError::Other(error.boxed()))?;
         self.log_client
             .push_logs(tenant_id, database_name, collection_id, records, cmek, None)
             .await
@@ -1926,6 +1929,11 @@ impl ServiceBasedFrontend {
             .get_cached_collection_for_tenant(database_name.clone(), collection_id, &tenant_id)
             .await
             .map_err(|err| ConditionalCommitError::Other(Box::new(err)))?;
+        #[cfg(feature = "diskann")]
+        if !request.buffered_writes.is_empty() {
+            crate::diskann::ensure_writable(collection_id)
+                .map_err(|error| ConditionalCommitError::Other(error.boxed()))?;
+        }
         let latest_collection_logical_size_bytes = collection.size_bytes_post_compaction;
 
         for write in &request.buffered_writes {
@@ -2997,6 +3005,26 @@ impl ServiceBasedFrontend {
             &tenant_id,
         )
         .await?;
+        #[cfg(feature = "diskann")]
+        if let Some(path) = crate::diskann::snapshot_path(collection_id)
+            .map_err(|error| QueryError::Other(error.boxed()))?
+        {
+            if !matches!(&self.executor, crate::executor::Executor::Local(_)) {
+                return Err(QueryError::Other(
+                    crate::diskann::DiskAnnRouteError::UnsupportedExecutor.boxed(),
+                ));
+            }
+            return crate::diskann::query(
+                path,
+                collection_and_segments.collection,
+                embeddings,
+                n_results,
+                include,
+                ids.is_some() || r#where.is_some(),
+            )
+            .await
+            .map_err(|error| QueryError::Other(error.boxed()));
+        }
         if self.enable_schema {
             if let Some(ref schema) = collection_and_segments.collection.schema {
                 if let Some(ref where_clause) = r#where {
