@@ -1,0 +1,22 @@
+[package]
+name = "chroma-diskann"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+publish = false
+
+[workspace]
+resolver = "2"
+
+[dependencies]
+diskann = { git = "https://github.com/microsoft/DiskANN.git", rev = "bceaf45dc6aa694485553816b448d7b8f55df393" }
+diskann-disk = { git = "https://github.com/microsoft/DiskANN.git", rev = "bceaf45dc6aa694485553816b448d7b8f55df393" }
+diskann-providers = { git = "https://github.com/microsoft/DiskANN.git", rev = "bceaf45dc6aa694485553816b448d7b8f55df393" }
+diskann-vector = { git = "https://github.com/microsoft/DiskANN.git", rev = "bceaf45dc6aa694485553816b448d7b8f55df393" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+
+[dev-dependencies]
+rand = "0.8"
+tempfile = "3.14"
