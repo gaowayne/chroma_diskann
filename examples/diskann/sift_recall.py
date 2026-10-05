@@ -118,13 +118,52 @@ def recall_at_k(pred: np.ndarray, truth: np.ndarray, k: int) -> float:
     return hits / float(pred.shape[0] * k)
 
 
+def has_sift_base(data_dir: Path) -> bool:
+    return (data_dir / "sift_base.bin").is_file() or (data_dir / "sift_base.fvecs").is_file()
+
+
+def resolve_data_dir(cli_path: Path | None) -> Path:
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates: list[Path] = []
+    if cli_path is not None:
+        candidates.append(cli_path)
+    env = os.environ.get("SIFT_DIR", "").strip()
+    if env:
+        candidates.append(Path(env))
+    candidates.append(repo_root.parent / "sift1M")
+    candidates.append(repo_root.parent / "PageANN" / "sift1M")
+
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in candidates:
+        resolved = path.expanduser()
+        key = resolved.resolve() if resolved.exists() else resolved
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(resolved)
+
+    for path in unique:
+        if path.is_dir() and has_sift_base(path):
+            return path
+
+    lines = [
+        "Could not find SIFT base vectors (sift_base.bin or sift_base.fvecs).",
+        "Tried:",
+    ]
+    for path in unique:
+        lines.append(f"  {path}  exists={path.is_dir()}  has_base={has_sift_base(path) if path.is_dir() else False}")
+    lines.append("Download into a sibling sift1M/ folder, or pass --data-dir explicitly.")
+    raise SystemExit("\n".join(lines))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="SIFT DiskANN Recall@k via Chroma PersistentClient")
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path(os.environ.get("SIFT_DIR", "")),
-        help="Directory with sift_base.bin/.fvecs, sift_query.bin/.fvecs",
+        default=None,
+        help="Directory with sift_base.bin/.fvecs and sift_query.bin/.fvecs",
     )
     parser.add_argument("--max-points", type=int, default=10_000, help="Crop of sift_base (default 10000)")
     parser.add_argument("--n-queries", type=int, default=100, help="Number of queries (default 100)")
@@ -143,11 +182,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if not args.data_dir or not args.data_dir.exists():
-        raise SystemExit(
-            "Pass --data-dir to the SIFT1M folder (sift_base.fvecs or sift_base.bin).\n"
-            "Example: --data-dir /path/to/PageANN/sift1M"
-        )
+    args.data_dir = resolve_data_dir(args.data_dir)
     if args.max_points < 256:
         raise SystemExit("--max-points must be >= 256 so native DiskANN is built")
 
