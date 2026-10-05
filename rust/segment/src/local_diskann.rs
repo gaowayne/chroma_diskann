@@ -743,7 +743,7 @@ async fn rebuild_native(guard: &mut Inner) -> Result<(), LocalDiskAnnSegmentWrit
         graph_degree: config.graph_degree,
         search_list_size: config.build_list_size,
         pq_bytes: config.pq_bytes,
-        num_threads: config.num_threads.max(1),
+        num_threads: config.num_threads.max(1).min(16),
         memory_budget_gb: config.memory_budget_gb,
         alpha: config.alpha,
         seed: 42,

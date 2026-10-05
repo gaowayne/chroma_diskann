@@ -155,16 +155,51 @@ pub struct QueryResult {
     pub comparisons: u32,
 }
 
+/// Microsoft DiskANN builds a private Tokio runtime and drops it when the
+/// builder/searcher finishes. That panics if a parent runtime Handle is still
+/// current — including Chroma compaction on `spawn_blocking` threads.
+fn run_off_tokio<T: Send>(
+    f: impl FnOnce() -> Result<T, DiskAnnError> + Send,
+) -> Result<T, DiskAnnError> {
+    std::thread::scope(|scope| match scope.spawn(f).join() {
+        Ok(result) => result,
+        Err(_) => Err(DiskAnnError::Native(
+            "native DiskANN thread panicked".to_string(),
+        )),
+    })
+}
+
 /// A blocking, immutable DiskANN reader. IDs are zero-based input row numbers.
 pub struct DiskAnnIndex {
-    searcher: Mutex<DiskIndexSearcher<AdHoc<f32>>>,
+    searcher: Option<Mutex<DiskIndexSearcher<AdHoc<f32>>>>,
     manifest: Manifest,
     vectors_path: PathBuf,
 }
 
+impl Drop for DiskAnnIndex {
+    fn drop(&mut self) {
+        if let Some(searcher) = self.searcher.take() {
+            let _ = std::thread::Builder::new()
+                .name("chroma-diskann-drop".into())
+                .spawn(move || drop(searcher))
+                .and_then(|handle| {
+                    handle
+                        .join()
+                        .map_err(|_| std::io::Error::other("diskann drop join failed"))
+                });
+        }
+    }
+}
+
 impl DiskAnnIndex {
     pub fn open(directory: impl AsRef<Path>) -> Result<Self, DiskAnnError> {
-        let directory = fs::canonicalize(directory.as_ref())?;
+        let directory = directory.as_ref().to_path_buf();
+        run_off_tokio(move || open_index(directory))
+    }
+}
+
+fn open_index(directory: PathBuf) -> Result<DiskAnnIndex, DiskAnnError> {
+        let directory = fs::canonicalize(directory)?;
         let manifest: Manifest =
             serde_json::from_reader(BufReader::new(File::open(directory.join(MANIFEST_FILE))?))?;
         if manifest.format_version != FORMAT_VERSION
@@ -212,13 +247,14 @@ impl DiskAnnIndex {
         let searcher =
             DiskIndexSearcher::new(1, u32::MAX as usize, &reader, factory, Metric::L2, None)
                 .map_err(native_error)?;
-        Ok(Self {
-            searcher: Mutex::new(searcher),
+        Ok(DiskAnnIndex {
+            searcher: Some(Mutex::new(searcher)),
             manifest,
             vectors_path,
         })
-    }
+}
 
+impl DiskAnnIndex {
     pub fn dimensions(&self) -> usize {
         self.manifest.dimensions as usize
     }
@@ -261,19 +297,28 @@ impl DiskAnnIndex {
         } else {
             Cow::Borrowed(query)
         };
-        let searcher = self.searcher.lock().map_err(|_| DiskAnnError::Poisoned)?;
-        let result = searcher
-            .search(
-                indexed_query.as_ref(),
-                count,
-                options
-                    .search_list_size
-                    .max(count)
-                    .min(self.manifest.num_points),
-                Some(options.beam_width),
-                SearchMode::graph(),
-            )
-            .map_err(native_error)?;
+        let search_list = options
+            .search_list_size
+            .max(count)
+            .min(self.manifest.num_points);
+        let beam_width = options.beam_width;
+        let indexed = indexed_query.into_owned();
+        let result = run_off_tokio(|| {
+            let searcher = self
+                .searcher
+                .as_ref()
+                .ok_or_else(|| DiskAnnError::Native("index has been dropped".to_string()))?;
+            let searcher = searcher.lock().map_err(|_| DiskAnnError::Poisoned)?;
+            searcher
+                .search(
+                    &indexed,
+                    count,
+                    search_list,
+                    Some(beam_width),
+                    SearchMode::graph(),
+                )
+                .map_err(native_error)
+        })?;
         let valid_count = result.stats.result_count as usize;
         if valid_count > result.results.len() || valid_count > count as usize {
             return Err(DiskAnnError::InvalidIndex(
@@ -323,9 +368,18 @@ impl DiskAnnIndex {
 }
 
 /// Builds a new, immutable disk index. The destination must not already exist.
-/// This is a blocking API; async callers must use a blocking worker.
+/// Safe to call from a Tokio worker: native DiskANN runs on a thread with no
+/// parent runtime Handle.
 pub fn build_index(
     directory: impl AsRef<Path>,
+    vectors: &[Vec<f32>],
+    options: &BuildOptions,
+) -> Result<(), DiskAnnError> {
+    run_off_tokio(|| build_index_inner(directory.as_ref(), vectors, options))
+}
+
+fn build_index_inner(
+    directory: &Path,
     vectors: &[Vec<f32>],
     options: &BuildOptions,
 ) -> Result<(), DiskAnnError> {
