@@ -1,3 +1,12 @@
+//! DiskANN collection configuration (Python `configuration={"diskann": {...}}`).
+//!
+//! `InternalDiskAnnConfiguration` is the fully filled struct stored on the collection.
+//! `DiskAnnConfiguration` is the sparse create-collection payload (all fields optional).
+//! `UpdateDiskAnnConfiguration` is limited to search-time knobs (`search_list_size`, `beam_width`).
+//!
+//! `pq_bytes: 0` is documented as “no PQ” at the API layer; `chroma-diskann` still
+//! builds with at least one PQ chunk because Microsoft DiskANN requires it.
+
 use crate::{default_space, hnsw_configuration::Space, DiskAnnIndexConfig};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
@@ -62,7 +71,8 @@ pub struct InternalDiskAnnConfiguration {
     #[serde(default = "default_beam_width")]
     #[validate(range(min = 1, max = 64))]
     pub beam_width: usize,
-    /// Product-quantization bytes per vector (0 = no PQ).
+    /// Product-quantization bytes per vector. `0` means “caller did not want PQ”;
+    /// native build clamps this to `1..=dimensions`.
     #[serde(default = "default_pq_bytes")]
     #[validate(range(max = 64))]
     pub pq_bytes: usize,

@@ -274,7 +274,7 @@ impl Handler<BackfillMessage> for LocalCompactionManager {
         tx.commit()
             .await
             .map_err(|_| CompactionManagerError::MetadataApplyLogsFailed)?;
-        // Next apply it to the vector writer.
+        // Vector WAL is applied to DiskANN or HNSW depending on segment type.
         if collection_and_segments.vector_segment.r#type == SegmentType::DiskAnn {
             let mut diskann_writer = self
                 .hnsw_segment_manager

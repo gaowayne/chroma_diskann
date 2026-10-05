@@ -232,6 +232,8 @@ impl LocalExecutor {
         let mut results = Vec::new();
         let mut returned_user_ids = Vec::new();
 
+        // Same KNN plan as HNSW: metadata filter → offset allow-list → vector reader.
+
         if is_diskann {
             let reader = self
                 .hnsw_manager

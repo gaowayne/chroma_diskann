@@ -3179,7 +3179,8 @@ impl HnswIndexConfig {
     }
 }
 
-/// Configuration for DiskANN vector index algorithm parameters
+/// Schema-level DiskANN knobs on `VectorIndexConfig.diskann` (optional fields).
+/// Present on `#embedding` when the collection's vector index is DiskANN.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Validate, Default)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]

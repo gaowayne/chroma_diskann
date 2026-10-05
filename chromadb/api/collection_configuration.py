@@ -43,6 +43,11 @@ class SpannConfiguration(TypedDict, total=False):
 
 
 class DiskAnnConfiguration(TypedDict, total=False):
+    """Create-collection DiskANN knobs. Mutually exclusive with hnsw and spann.
+
+    Native graph build runs only after the collection has at least 256 vectors.
+    """
+
     space: Space
     graph_degree: int
     build_list_size: int

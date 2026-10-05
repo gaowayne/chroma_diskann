@@ -1,4 +1,26 @@
-﻿use std::{
+﻿//! Thin Chroma adapter over Microsoft DiskANN (Rust crates under `DiskANN/`).
+//!
+//! This crate is **not** the algorithm itself. It:
+//! - writes original vectors as `vectors.fbin`
+//! - calls `DiskIndexBuilder` to produce `index_disk.index` + PQ files
+//! - records a small `manifest.json` so later `open()` can sanity-check dims / N
+//! - searches with `DiskIndexSearcher`
+//!
+//! Native DiskANN requires **at least 256 points**. Callers (local segment) must
+//! exact-scan below that threshold. `pq_bytes == 0` is accepted as “use 1 PQ
+//! chunk” because the native builder rejects a zero chunk count.
+//!
+//! Layout of a native directory:
+//! ```text
+//! native/
+//!   manifest.json
+//!   vectors.fbin
+//!   index_disk.index
+//!   index_pq_compressed.bin
+//!   index_pq_pivots.bin
+//! ```
+
+use std::{
     borrow::Cow,
     fs::{self, File, OpenOptions},
     io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
@@ -66,11 +88,15 @@ pub enum DiskAnnError {
     Metadata(#[from] serde_json::Error),
 }
 
+/// Parameters forwarded to Microsoft DiskANN at **index build** time.
 #[derive(Clone, Debug)]
 pub struct BuildOptions {
     pub metric: DistanceMetric,
+    /// Graph max degree R. Must be < number of points.
     pub graph_degree: usize,
+    /// Candidate list size L used while building (not the query L).
     pub search_list_size: usize,
+    /// PQ bytes per vector. `0` is clamped to `1` and never exceeds dimensionality.
     pub pq_bytes: usize,
     pub num_threads: usize,
     pub memory_budget_gb: f64,
@@ -392,6 +418,7 @@ fn validate_build(
     vectors: &[Vec<f32>],
     options: &BuildOptions,
 ) -> Result<(u32, u32), DiskAnnError> {
+    // Microsoft DiskANN PQ training uses a 256-point floor; chroma local exact-scans below it.
     if vectors.len() < 256 {
         return Err(invalid_input("PQ training requires at least 256 vectors"));
     }

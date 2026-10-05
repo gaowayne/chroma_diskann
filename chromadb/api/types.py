@@ -1648,7 +1648,11 @@ class HnswIndexConfig(BaseModel):
 
 
 class DiskAnnIndexConfig(BaseModel):
-    """Configuration for DiskANN vector index."""
+    """Schema-path DiskANN config (VectorIndexConfig.diskann).
+
+    graph_degree / build_list_size affect index construction.
+    search_list_size / beam_width affect query. pq_bytes is clamped at native build.
+    """
 
     _validate_extra_fields = _create_extra_fields_validator(
         [

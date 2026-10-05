@@ -1,3 +1,17 @@
+//! Local-only DiskANN vector segment (PersistentClient / SQLite log).
+//!
+//! Mirrors `local_hnsw.rs` at the Chroma boundary:
+//! WAL logs → `apply_log_chunk` → in-memory `IdMap` + `diskann_metadata.json`.
+//! When `IdMap` has ≥ [`MIN_NATIVE_POINTS`] (256) dirty points, `persist()`
+//! rebuilds Microsoft DiskANN under `<segment_id>/native/`.
+//!
+//! Query policy:
+//! - unfiltered, not dirty, native graph loaded → native graph search
+//! - otherwise (N < 256, metadata filter, dirty, missing native files) → exact scan
+//!
+//! Native IDs are **row indices** into `native_labels`; Chroma still uses
+//! monotonically increasing labels as offset IDs (same idea as HNSW).
+
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -18,18 +32,23 @@ use sqlx::Row;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
+/// Sidecar JSON: user-id ↔ offset-id maps and full vectors (needed for exact scan).
 const METADATA_FILE: &str = "diskann_metadata.json";
+/// Directory name for Microsoft DiskANN artifacts next to the sidecar JSON.
 const NATIVE_INDEX_DIR: &str = "native";
+/// DiskANN PQ training / graph construction floor used by `chroma-diskann`.
 const MIN_NATIVE_POINTS: usize = 256;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct IdMap {
     dimensionality: usize,
+    /// High-water mark for offset IDs (labels). Not equal to live embedding count after deletes.
     total_elements_added: u32,
     id_to_label: HashMap<String, u32>,
     label_to_id: HashMap<u32, String>,
     embeddings: HashMap<u32, Vec<f32>>,
     /// Labels in the row order used to build the last native DiskANN graph.
+    /// Native search returns row `i`; we map it back with `native_labels[i]`.
     #[serde(default)]
     native_labels: Vec<u32>,
 }
@@ -55,6 +74,7 @@ struct Inner {
     num_elements_since_last_persist: u64,
     config: InternalDiskAnnConfiguration,
     native_index: Option<Arc<chroma_diskann::DiskAnnIndex>>,
+    /// True after add/update/upsert/delete until a successful native rebuild (or N drops below 256).
     dirty: bool,
 }
 
@@ -199,6 +219,7 @@ fn native_dir(persist_path: &str) -> PathBuf {
     PathBuf::from(persist_path).join(NATIVE_INDEX_DIR)
 }
 
+/// Native graph may be used only when live vectors, native row order, and N all agree.
 fn native_is_ready(id_map: &IdMap) -> bool {
     let n = id_map.embeddings.len();
     n >= MIN_NATIVE_POINTS
@@ -396,6 +417,7 @@ impl LocalDiskAnnSegmentReader {
             .ok_or(LocalDiskAnnSegmentReaderError::GetEmbeddingError)
     }
 
+    /// KNN over this segment. Empty `allowed_offset_ids` means unfiltered.
     pub async fn query_embedding(
         &self,
         allowed_offset_ids: &[u32],
@@ -416,6 +438,8 @@ impl LocalDiskAnnSegmentReader {
             Some(allowed_offset_ids.iter().copied().collect())
         };
 
+        // Metadata filters become a allow-list of offset IDs. Native DiskANN cannot
+        // apply Chroma where-clauses, so filtered queries always exact-scan.
         let can_use_native = allowed.is_none()
             && !guard.dirty
             && guard.native_index.is_some()
@@ -537,6 +561,7 @@ impl LocalDiskAnnSegmentWriter {
         })
     }
 
+    /// Apply WAL records and persist. Rebuilds native DiskANN when N ≥ 256 and dirty.
     pub async fn apply_log_chunk(
         &mut self,
         log_chunk: Chunk<LogRecord>,
@@ -667,6 +692,7 @@ impl LocalDiskAnnSegmentWriter {
 }
 
 async fn persist(guard: &mut Inner) -> Result<(), LocalDiskAnnSegmentWriterError> {
+    // Always write the sidecar first so exact-scan still works if native rebuild fails later.
     let Some(path) = guard.persist_path.clone() else {
         return Ok(());
     };
@@ -693,6 +719,7 @@ async fn persist(guard: &mut Inner) -> Result<(), LocalDiskAnnSegmentWriterError
 }
 
 async fn rebuild_native(guard: &mut Inner) -> Result<(), LocalDiskAnnSegmentWriterError> {
+    // Full rebuild: DiskANN's on-disk graph is immutable; mutations mark dirty and reconstruct.
     let Some(path) = guard.persist_path.clone() else {
         return Ok(());
     };

@@ -40,6 +40,7 @@ pub struct LocalSegmentManagerConfig {
 #[derive(Clone, Debug)]
 pub struct LocalSegmentManager {
     hnsw_index_pool: Arc<dyn Cache<IndexUuid, LocalHnswIndex>>,
+    /// In-process DiskANN indexes keyed by segment id (reader and writer share the same `Inner`).
     diskann_index_pool: Arc<Mutex<HashMap<IndexUuid, LocalDiskAnnIndex>>>,
     #[allow(dead_code)]
     eviction_callback_task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,

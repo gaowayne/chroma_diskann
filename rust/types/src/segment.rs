@@ -136,6 +136,7 @@ pub enum SegmentType {
     Sqlite,
     Spann,
     QuantizedSpann,
+    /// Local PersistentClient vector index backed by Microsoft DiskANN (`urn:chroma:segment/vector/diskann`).
     DiskAnn,
 }
 

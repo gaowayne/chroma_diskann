@@ -4,7 +4,13 @@ Usage (from chroma_diskann repo root, after `pip install -e .`):
 
     PERSIST_DIR=./chroma-diskann-testdata python examples/diskann/local_persistent.py
 
-The persist directory is kept so you can inspect native DiskANN files.
+What this script checks:
+  1. create_collection(configuration={"diskann": ...}) is not rewritten to HNSW
+  2. N < 256: query works via exact scan; no native/ directory yet
+  3. N >= 256 after upsert: persist_dir/<segment_id>/native/ is written
+     (index_disk.index, PQ files, vectors.fbin, manifest.json)
+
+Vectors are 8-dimensional so default pq_bytes=8 is valid.
 """
 
 from __future__ import annotations
@@ -42,12 +48,14 @@ def main() -> None:
     print("collection configuration:", col.configuration)
 
     print("\n=== step 1: small N (<256), exact scan ===")
+    # Two points: compaction persists sidecar JSON only; DiskANN graph is not built.
     col.add(ids=["a", "b"], embeddings=[[0.1, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.3, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
     small = col.query(query_embeddings=[[0.1, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]], n_results=1)
     print("small-n query ids:", small["ids"])
     print("native dirs after small add:", _native_dirs(persist_dir))
 
     print("\n=== step 2: upsert 256 vectors, native DiskANN build + search ===")
+    # 256 new ids plus a/b from step 1 => 258 live vectors, which meets the native floor.
     ids = [f"id-{i}" for i in range(256)]
     embeddings = [[float(i), float(i + 1), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] for i in range(256)]
     col.upsert(ids=ids, embeddings=embeddings)

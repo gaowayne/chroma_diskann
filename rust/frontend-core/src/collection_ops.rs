@@ -62,6 +62,7 @@ pub fn supported_segment_types(kind: ExecutorKind) -> Vec<SegmentType> {
         ExecutorKind::Local => vec![
             SegmentType::HnswLocalMemory,
             SegmentType::HnswLocalPersisted,
+            // Local PersistentClient can host DiskANN; distributed query/compaction cannot.
             SegmentType::DiskAnn,
             SegmentType::Sqlite,
         ],
@@ -100,6 +101,7 @@ pub fn plan_create_collection(
                 }
             }
             VectorIndexConfiguration::DiskAnn(_) => {
+                // Distributed workers have no DiskANN provider; fail create instead of falling back.
                 if !supported.contains(&SegmentType::DiskAnn) {
                     return Err(CreateCollectionError::DiskAnnNotSupported);
                 }
@@ -239,6 +241,7 @@ pub fn plan_create_collection(
             }
 
             let mut vector_segment_type = SegmentType::HnswLocalPersisted;
+            // Schema-reconciled DiskANN config is the usual path (enable_schema=true).
             if enable_schema {
                 if let Some(schema) = reconciled_schema.as_ref() {
                     if schema.get_internal_diskann_config().is_some() {
