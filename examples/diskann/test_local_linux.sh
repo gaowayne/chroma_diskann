@@ -3,20 +3,51 @@
 set -euo pipefail
 
 CHROMA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# rust/diskann/Cargo.toml expects: <parent-of-codecommit1>/DiskANN
-DISKANN_ROOT="$(cd "${CHROMA_ROOT}/../../DiskANN" 2>/dev/null && pwd || true)"
+PARENT_DIR="$(cd "${CHROMA_ROOT}/.." && pwd)"
+SIBLING="${PARENT_DIR}/DiskANN"
 PERSIST_DIR="${PERSIST_DIR:-${CHROMA_ROOT}/chroma-diskann-testdata}"
 
+resolve_diskann() {
+  local candidate
+  for candidate in \
+    "${DISKANN_ROOT:-}" \
+    "${SIBLING}" \
+    "${PARENT_DIR}/../DiskANN" \
+    "${CHROMA_ROOT}/DiskANN"
+  do
+    if [[ -n "${candidate}" && -f "${candidate}/diskann/Cargo.toml" ]]; then
+      cd "${candidate}" && pwd
+      return 0
+    fi
+  done
+  return 1
+}
+
+DISKANN_FOUND="$(resolve_diskann || true)"
+
 echo "chroma root:  ${CHROMA_ROOT}"
-echo "DiskANN root: ${DISKANN_ROOT:-MISSING}"
+echo "DiskANN root: ${DISKANN_FOUND:-MISSING}"
 echo "persist dir:  ${PERSIST_DIR}"
 
-if [[ ! -f "${DISKANN_ROOT}/diskann/Cargo.toml" ]]; then
-  echo "DiskANN rust crates not found at ${CHROMA_ROOT}/../../DiskANN"
-  echo "On the Ubuntu machine use this layout:"
-  echo "  ~/vectorsearch/DiskANN"
-  echo "  ~/vectorsearch/codecommit1/chroma_diskann"
+if [[ -z "${DISKANN_FOUND}" ]]; then
+  echo
+  echo "DiskANN rust crates were not found."
+  echo "Cargo expects DiskANN next to chroma_diskann:"
+  echo "  ${SIBLING}"
+  echo
+  echo "If DiskANN is already on this machine:"
+  echo "  export DISKANN_ROOT=/absolute/path/to/DiskANN"
+  echo "  ln -sfn \"\$DISKANN_ROOT\" \"${SIBLING}\""
+  echo
+  echo "Or clone it:"
+  echo "  git clone https://github.com/microsoft/DiskANN.git ${SIBLING}"
   exit 1
+fi
+
+# rust/diskann/Cargo.toml uses ../../../DiskANN from rust/diskann/
+if [[ "${DISKANN_FOUND}" != "${SIBLING}" ]]; then
+  echo "Linking ${SIBLING} -> ${DISKANN_FOUND}"
+  ln -sfn "${DISKANN_FOUND}" "${SIBLING}"
 fi
 
 if ! command -v rustc >/dev/null; then
@@ -27,7 +58,9 @@ fi
 cd "${CHROMA_ROOT}"
 rustup show
 
-python3 -m venv .venv
+if [[ ! -d .venv ]]; then
+  python3 -m venv .venv
+fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
 python -m pip install -U pip

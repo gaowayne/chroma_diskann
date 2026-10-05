@@ -4,11 +4,14 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+# DiskANN must sit next to the chroma_diskann repo:
+#   <parent>/chroma_diskann
+#   <parent>/DiskANN
 [dependencies]
-diskann = { path = "../../../../DiskANN/diskann" }
-diskann-disk = { path = "../../../../DiskANN/diskann-disk" }
-diskann-providers = { path = "../../../../DiskANN/diskann-providers" }
-diskann-vector = { path = "../../../../DiskANN/diskann-vector" }
+diskann = { path = "../../../DiskANN/diskann" }
+diskann-disk = { path = "../../../DiskANN/diskann-disk" }
+diskann-providers = { path = "../../../DiskANN/diskann-providers" }
+diskann-vector = { path = "../../../DiskANN/diskann-vector" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
