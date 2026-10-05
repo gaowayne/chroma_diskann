@@ -94,6 +94,8 @@ pub enum CompactionManagerError {
     MetadataReaderError(#[from] SqliteMetadataError),
     #[error("Error reading from hnsw segment reader: {0}")]
     HnswReaderError(#[from] LocalHnswSegmentReaderError),
+    #[error("Error reading from DiskANN segment reader: {0}")]
+    DiskAnnReaderError(#[from] LocalDiskAnnSegmentReaderError),
     #[error("Error constructing hnsw segment reader: {0}")]
     HnswReaderConstructionError(#[from] LocalSegmentManagerError),
     #[error("Error purging logs")]
@@ -112,6 +114,7 @@ impl ChromaError for CompactionManagerError {
             CompactionManagerError::GetCollectionWithSegmentsError(e) => e.code(),
             CompactionManagerError::MetadataReaderError(e) => e.code(),
             CompactionManagerError::HnswReaderError(e) => e.code(),
+            CompactionManagerError::DiskAnnReaderError(e) => e.code(),
             CompactionManagerError::HnswReaderConstructionError(e) => e.code(),
             CompactionManagerError::PurgeLogsFailure => ErrorCodes::Internal,
             CompactionManagerError::SchemaReconcileError(e) => e.code(),
