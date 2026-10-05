@@ -195,6 +195,28 @@ python examples/diskann/local_persistent.py
 
 ---
 
+## 7.1 第一步数据集 demo：SIFT 子集 Recall@10
+
+冒烟脚本只有 258 个合成向量。下一档用官方 SIFT1M（128 维 L2），先 **crop 前 10000 个 base 点**，在 crop 上重算 exact GT（不能直接用全库 `sift_groundtruth.ivecs`，邻居可能落在 10K 之外）。
+
+数据目录需要 `sift_base.bin` 或 `sift_base.fvecs`，以及对应的 query 文件。PageANN 的 `sift1M/` 即可。
+
+```bash
+cd /path/to/chroma_diskann
+source .venv/bin/activate
+python examples/diskann/sift_recall.py \
+  --data-dir /path/to/PageANN/sift1M \
+  --max-points 10000 \
+  --n-queries 100 \
+  --k 10
+```
+
+成功应打印 `native dirs`、`Recall@10 = …`、`OK`。
+
+调通后再加大 `--max-points 100000` 或全量 `1000000`（内存和建图时间会明显上升）。全量时仍建议本脚本重算 crop GT；全库官方 ivecs 留给以后对照 PageANN 的脚本。
+
+---
+
 ## 8. 刻意未做
 
 - Distributed DiskANN（query/compaction service、blockfile、SPANN 风格 sharding）
