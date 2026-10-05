@@ -375,7 +375,8 @@ pub fn build_index(
     vectors: &[Vec<f32>],
     options: &BuildOptions,
 ) -> Result<(), DiskAnnError> {
-    run_off_tokio(|| build_index_inner(directory.as_ref(), vectors, options))
+    let directory = directory.as_ref();
+    run_off_tokio(|| build_index_inner(directory, vectors, options))
 }
 
 fn build_index_inner(
@@ -384,7 +385,6 @@ fn build_index_inner(
     options: &BuildOptions,
 ) -> Result<(), DiskAnnError> {
     let (num_points, dimensions) = validate_build(vectors, options)?;
-    let directory = directory.as_ref();
     let parent = directory
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
