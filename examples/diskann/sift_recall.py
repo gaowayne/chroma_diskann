@@ -174,7 +174,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--persist-dir",
         type=Path,
-        default=Path(os.environ.get("PERSIST_DIR", "./chroma-sift-testdata")),
+        default=Path(os.environ.get("SIFT_PERSIST_DIR", "./chroma-sift-testdata")),
+        help="Isolated Chroma path (does not use PERSIST_DIR from the smoke test)",
     )
     parser.add_argument("--collection", default="sift_diskann")
     return parser.parse_args()
@@ -203,6 +204,7 @@ def main() -> None:
 
     persist_dir = args.persist_dir.resolve()
     persist_dir.mkdir(parents=True, exist_ok=True)
+    print(f"persist dir:  {persist_dir}")
     client = chromadb.PersistentClient(path=str(persist_dir))
     if args.collection in [c.name for c in client.list_collections()]:
         client.delete_collection(args.collection)
