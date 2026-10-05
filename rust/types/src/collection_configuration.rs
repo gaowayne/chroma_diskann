@@ -592,6 +592,7 @@ impl TryFrom<&Schema> for InternalCollectionConfiguration {
             hnsw,
             spann,
             diskann,
+            source_key: _,
         } = vector_config;
 
         let active = usize::from(hnsw.is_some())
