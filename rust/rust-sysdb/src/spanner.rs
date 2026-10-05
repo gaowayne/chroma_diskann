@@ -8364,6 +8364,7 @@ pub mod tests {
             new_configuration: Some(chroma_types::UpdateCollectionConfiguration {
                 hnsw: Some(hnsw_config),
                 spann: None,
+                diskann: None,
                 embedding_function: None,
             }),
             cursor_updates: None,
@@ -8474,6 +8475,7 @@ pub mod tests {
             new_configuration: Some(chroma_types::UpdateCollectionConfiguration {
                 hnsw: None,
                 spann: None,
+                diskann: None,
                 embedding_function: Some(new_ef.clone()),
             }),
             cursor_updates: None,
@@ -8493,6 +8495,7 @@ pub mod tests {
             .apply_update_configuration(&chroma_types::UpdateCollectionConfiguration {
                 hnsw: None,
                 spann: None,
+                diskann: None,
                 embedding_function: Some(new_ef),
             })
             .expect("apply_update_configuration should succeed");
@@ -8550,6 +8553,7 @@ pub mod tests {
             new_configuration: Some(chroma_types::UpdateCollectionConfiguration {
                 hnsw: None,
                 spann: Some(spann_update.clone()),
+                diskann: None,
                 embedding_function: None,
             }),
             cursor_updates: None,
@@ -8569,6 +8573,7 @@ pub mod tests {
             .apply_update_configuration(&chroma_types::UpdateCollectionConfiguration {
                 hnsw: None,
                 spann: Some(spann_update),
+                diskann: None,
                 embedding_function: None,
             })
             .expect("apply_update_configuration should succeed");

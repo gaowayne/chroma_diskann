@@ -136,6 +136,7 @@ pub enum SegmentType {
     Sqlite,
     Spann,
     QuantizedSpann,
+    DiskAnn,
 }
 
 impl From<SegmentType> for String {
@@ -154,6 +155,7 @@ impl From<SegmentType> for String {
             }
             SegmentType::Spann => "urn:chroma:segment/vector/spann".to_string(),
             SegmentType::QuantizedSpann => "urn:chroma:segment/vector/quantized-spann".to_string(),
+            SegmentType::DiskAnn => "urn:chroma:segment/vector/diskann".to_string(),
             SegmentType::Sqlite => "urn:chroma:segment/metadata/sqlite".to_string(),
         }
     }
@@ -171,6 +173,7 @@ impl TryFrom<&str> for SegmentType {
             "urn:chroma:segment/vector/hnsw-local-persisted" => Ok(Self::HnswLocalPersisted),
             "urn:chroma:segment/vector/spann" => Ok(SegmentType::Spann),
             "urn:chroma:segment/vector/quantized-spann" => Ok(SegmentType::QuantizedSpann),
+            "urn:chroma:segment/vector/diskann" => Ok(SegmentType::DiskAnn),
             "urn:chroma:segment/metadata/sqlite" => Ok(SegmentType::Sqlite),
             _ => Err(SegmentConversionError::InvalidSegmentType),
         }
@@ -247,6 +250,7 @@ impl Segment {
                 | SegmentType::BlockfileRecord
                 | SegmentType::QuantizedSpann
                 | SegmentType::Spann
+                | SegmentType::DiskAnn
         )
     }
 

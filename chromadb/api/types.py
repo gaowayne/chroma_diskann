@@ -72,6 +72,7 @@ __all__ = [
     "FtsIndexConfig",
     "HnswIndexConfig",
     "SpannIndexConfig",
+    "DiskAnnIndexConfig",
     "VectorIndexConfig",
     "SparseVectorIndexConfig",
     "StringInvertedIndexConfig",
@@ -1646,6 +1647,32 @@ class HnswIndexConfig(BaseModel):
     resize_factor: Optional[float] = None
 
 
+class DiskAnnIndexConfig(BaseModel):
+    """Configuration for DiskANN vector index."""
+
+    _validate_extra_fields = _create_extra_fields_validator(
+        [
+            "graph_degree",
+            "build_list_size",
+            "search_list_size",
+            "beam_width",
+            "pq_bytes",
+            "num_threads",
+            "memory_budget_gb",
+            "alpha",
+        ]
+    )
+
+    graph_degree: Optional[int] = None
+    build_list_size: Optional[int] = None
+    search_list_size: Optional[int] = None
+    beam_width: Optional[int] = None
+    pq_bytes: Optional[int] = None
+    num_threads: Optional[int] = None
+    memory_budget_gb: Optional[float] = None
+    alpha: Optional[float] = None
+
+
 class SpannIndexConfig(BaseModel):
     """Configuration for SPANN vector index."""
 
@@ -1694,6 +1721,7 @@ class VectorIndexConfig(BaseModel):
     ] = None  # key to source the vector from (accepts str or Key)
     hnsw: Optional[HnswIndexConfig] = None
     spann: Optional[SpannIndexConfig] = None
+    diskann: Optional[DiskAnnIndexConfig] = None
 
     @field_validator("source_key", mode="before")
     @classmethod

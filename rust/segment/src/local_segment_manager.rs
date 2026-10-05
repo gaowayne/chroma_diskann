@@ -8,9 +8,14 @@ use chroma_index::IndexUuid;
 use chroma_sqlite::db::SqliteDb;
 use chroma_types::{Collection, Segment};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
+use tokio::sync::Mutex;
 
+use crate::local_diskann::{
+    LocalDiskAnnIndex, LocalDiskAnnSegmentReader, LocalDiskAnnSegmentReaderError,
+    LocalDiskAnnSegmentWriter, LocalDiskAnnSegmentWriterError,
+};
 use crate::local_hnsw::{
     LocalHnswIndex, LocalHnswSegmentReader, LocalHnswSegmentReaderError, LocalHnswSegmentWriter,
     LocalHnswSegmentWriterError,
@@ -35,6 +40,7 @@ pub struct LocalSegmentManagerConfig {
 #[derive(Clone, Debug)]
 pub struct LocalSegmentManager {
     hnsw_index_pool: Arc<dyn Cache<IndexUuid, LocalHnswIndex>>,
+    diskann_index_pool: Arc<Mutex<HashMap<IndexUuid, LocalDiskAnnIndex>>>,
     #[allow(dead_code)]
     eviction_callback_task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
     sqlite: SqliteDb,
@@ -63,6 +69,7 @@ impl Configurable<LocalSegmentManagerConfig> for LocalSegmentManager {
         });
         let res = Self {
             hnsw_index_pool: hnsw_index_pool.into(),
+            diskann_index_pool: Arc::new(Mutex::new(HashMap::new())),
             eviction_callback_task_handle: Some(Arc::new(handle)),
             sqlite: sqldb,
             persist_root: config.persist_path.clone(),
@@ -80,6 +87,10 @@ pub enum LocalSegmentManagerError {
     PoolCacheError(#[from] CacheError),
     #[error("Error creating hnsw segment writer: {0}")]
     LocalHnswSegmentWriterError(#[from] LocalHnswSegmentWriterError),
+    #[error("Error creating DiskANN segment reader: {0}")]
+    LocalDiskAnnSegmentReaderError(#[from] LocalDiskAnnSegmentReaderError),
+    #[error("Error creating DiskANN segment writer: {0}")]
+    LocalDiskAnnSegmentWriterError(#[from] LocalDiskAnnSegmentWriterError),
 }
 
 impl ChromaError for LocalSegmentManagerError {
@@ -88,6 +99,8 @@ impl ChromaError for LocalSegmentManagerError {
             LocalSegmentManagerError::LocalHnswSegmentReaderError(e) => e.code(),
             LocalSegmentManagerError::PoolCacheError(e) => e.code(),
             LocalSegmentManagerError::LocalHnswSegmentWriterError(e) => e.code(),
+            LocalSegmentManagerError::LocalDiskAnnSegmentReaderError(e) => e.code(),
+            LocalSegmentManagerError::LocalDiskAnnSegmentWriterError(e) => e.code(),
         }
     }
 }
@@ -150,8 +163,55 @@ impl LocalSegmentManager {
         }
     }
 
+    pub async fn get_diskann_reader(
+        &self,
+        collection: &Collection,
+        segment: &Segment,
+        dimensionality: usize,
+    ) -> Result<LocalDiskAnnSegmentReader, LocalSegmentManagerError> {
+        let index_uuid = IndexUuid(segment.id.0);
+        let mut pool = self.diskann_index_pool.lock().await;
+        if let Some(index) = pool.get(&index_uuid) {
+            return Ok(LocalDiskAnnSegmentReader::from_index(index.clone()));
+        }
+        let reader = LocalDiskAnnSegmentReader::from_segment(
+            collection,
+            segment,
+            dimensionality,
+            self.persist_root.clone(),
+            self.sqlite.clone(),
+        )
+        .await?;
+        pool.insert(index_uuid, reader.index.clone());
+        Ok(reader)
+    }
+
+    pub async fn get_diskann_writer(
+        &self,
+        collection: &Collection,
+        segment: &Segment,
+        dimensionality: usize,
+    ) -> Result<LocalDiskAnnSegmentWriter, LocalSegmentManagerError> {
+        let index_uuid = IndexUuid(segment.id.0);
+        let mut pool = self.diskann_index_pool.lock().await;
+        if let Some(index) = pool.get(&index_uuid) {
+            return Ok(LocalDiskAnnSegmentWriter::from_index(index.clone())?);
+        }
+        let writer = LocalDiskAnnSegmentWriter::from_segment(
+            collection,
+            segment,
+            dimensionality,
+            self.persist_root.clone(),
+            self.sqlite.clone(),
+        )
+        .await?;
+        pool.insert(index_uuid, writer.index.clone());
+        Ok(writer)
+    }
+
     pub async fn reset(&self) -> Result<(), LocalSegmentManagerError> {
         self.hnsw_index_pool.clear().await?;
+        self.diskann_index_pool.lock().await.clear();
         Ok(())
     }
 }

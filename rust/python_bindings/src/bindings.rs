@@ -689,6 +689,7 @@ impl Bindings {
                 CollectionConfiguration {
                     hnsw: None,
                     spann: None,
+                    diskann: None,
                     embedding_function: None,
                 },
                 self.frontend.get_default_knn_index(),

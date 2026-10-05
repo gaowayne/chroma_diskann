@@ -42,9 +42,30 @@ class SpannConfiguration(TypedDict, total=False):
     merge_threshold: int
 
 
+class DiskAnnConfiguration(TypedDict, total=False):
+    space: Space
+    graph_degree: int
+    build_list_size: int
+    search_list_size: int
+    beam_width: int
+    pq_bytes: int
+    num_threads: int
+    memory_budget_gb: float
+    alpha: float
+
+
+def _count_vector_index_configs(
+    hnsw: Optional[Any],
+    spann: Optional[Any],
+    diskann: Optional[Any],
+) -> int:
+    return sum(1 for cfg in (hnsw, spann, diskann) if cfg is not None)
+
+
 class CollectionConfiguration(TypedDict, total=True):
     hnsw: Optional[HNSWConfiguration]
     spann: Optional[SpannConfiguration]
+    diskann: Optional[DiskAnnConfiguration]
     embedding_function: Optional[EmbeddingFunction]  # type: ignore
 
 
@@ -59,21 +80,24 @@ def load_collection_configuration_from_json_str(
 def load_collection_configuration_from_json(
     config_json_map: Dict[str, Any]
 ) -> CollectionConfiguration:
-    if (
-        config_json_map.get("spann") is not None
-        and config_json_map.get("hnsw") is not None
-    ):
-        raise ValueError("hnsw and spann cannot both be provided")
+    hnsw_raw = config_json_map.get("hnsw")
+    spann_raw = config_json_map.get("spann")
+    diskann_raw = config_json_map.get("diskann")
+    if _count_vector_index_configs(hnsw_raw, spann_raw, diskann_raw) > 1:
+        raise ValueError("only one of hnsw, spann, or diskann may be provided")
 
     hnsw_config = None
     spann_config = None
+    diskann_config = None
     ef_config = None
 
-    # Process vector index configuration (HNSW or SPANN)
-    if config_json_map.get("hnsw") is not None:
-        hnsw_config = cast(HNSWConfiguration, config_json_map["hnsw"])
-    if config_json_map.get("spann") is not None:
-        spann_config = cast(SpannConfiguration, config_json_map["spann"])
+    # Process vector index configuration (HNSW, SPANN, or DiskANN)
+    if hnsw_raw is not None:
+        hnsw_config = cast(HNSWConfiguration, hnsw_raw)
+    if spann_raw is not None:
+        spann_config = cast(SpannConfiguration, spann_raw)
+    if diskann_raw is not None:
+        diskann_config = cast(DiskAnnConfiguration, diskann_raw)
 
     # Process embedding function configuration
     if config_json_map.get("embedding_function") is not None:
@@ -111,6 +135,7 @@ def load_collection_configuration_from_json(
     return CollectionConfiguration(
         hnsw=hnsw_config,
         spann=spann_config,
+        diskann=diskann_config,
         embedding_function=ef,  # type: ignore
     )
 
@@ -123,6 +148,7 @@ def collection_configuration_to_json(config: CollectionConfiguration) -> Dict[st
     if isinstance(config, dict):
         hnsw_config = config.get("hnsw")
         spann_config = config.get("spann")
+        diskann_config = config.get("diskann")
         ef = config.get("embedding_function")
     else:
         try:
@@ -134,9 +160,16 @@ def collection_configuration_to_json(config: CollectionConfiguration) -> Dict[st
         except ValueError:
             spann_config = None
         try:
+            diskann_config = config.get_parameter("diskann").value
+        except ValueError:
+            diskann_config = None
+        try:
             ef = config.get_parameter("embedding_function").value
         except ValueError:
             ef = None
+
+    if _count_vector_index_configs(hnsw_config, spann_config, diskann_config) > 1:
+        raise ValueError("only one of hnsw, spann, or diskann may be provided")
 
     ef_config: Dict[str, Any] | None = None
     if hnsw_config is not None:
@@ -149,6 +182,11 @@ def collection_configuration_to_json(config: CollectionConfiguration) -> Dict[st
             spann_config = cast(SpannConfiguration, spann_config)
         except Exception as e:
             raise ValueError(f"not a valid spann config: {e}")
+    if diskann_config is not None:
+        try:
+            diskann_config = cast(DiskAnnConfiguration, diskann_config)
+        except Exception as e:
+            raise ValueError(f"not a valid diskann config: {e}")
 
     if ef is None:
         ef = None
@@ -177,6 +215,7 @@ def collection_configuration_to_json(config: CollectionConfiguration) -> Dict[st
     return {
         "hnsw": hnsw_config,
         "spann": spann_config,
+        "diskann": diskann_config,
         "embedding_function": ef_config,
     }
 
@@ -254,9 +293,49 @@ def json_to_create_spann_configuration(
     return config
 
 
+class CreateDiskAnnConfiguration(TypedDict, total=False):
+    space: Space
+    graph_degree: int
+    build_list_size: int
+    search_list_size: int
+    beam_width: int
+    pq_bytes: int
+    num_threads: int
+    memory_budget_gb: float
+    alpha: float
+
+
+def json_to_create_diskann_configuration(
+    json_map: Dict[str, Any]
+) -> CreateDiskAnnConfiguration:
+    config: CreateDiskAnnConfiguration = {}
+    if "space" in json_map:
+        space_value = json_map["space"]
+        if space_value in get_args(Space):
+            config["space"] = space_value
+        else:
+            raise ValueError(f"not a valid space: {space_value}")
+    for key in (
+        "graph_degree",
+        "build_list_size",
+        "search_list_size",
+        "beam_width",
+        "pq_bytes",
+        "num_threads",
+    ):
+        if key in json_map:
+            config[key] = json_map[key]  # type: ignore[literal-required]
+    if "memory_budget_gb" in json_map:
+        config["memory_budget_gb"] = json_map["memory_budget_gb"]
+    if "alpha" in json_map:
+        config["alpha"] = json_map["alpha"]
+    return config
+
+
 class CreateCollectionConfiguration(TypedDict, total=False):
     hnsw: Optional[CreateHNSWConfiguration]
     spann: Optional[CreateSpannConfiguration]
+    diskann: Optional[CreateDiskAnnConfiguration]
     embedding_function: Optional[EmbeddingFunction]  # type: ignore
 
 
@@ -295,17 +374,23 @@ def create_collection_configuration_from_legacy_metadata_dict(
 def load_create_collection_configuration_from_json(
     json_map: Dict[str, Any]
 ) -> CreateCollectionConfiguration:
-    if json_map.get("hnsw") is not None and json_map.get("spann") is not None:
-        raise ValueError("hnsw and spann cannot both be provided")
+    hnsw_raw = json_map.get("hnsw")
+    spann_raw = json_map.get("spann")
+    diskann_raw = json_map.get("diskann")
+    if _count_vector_index_configs(hnsw_raw, spann_raw, diskann_raw) > 1:
+        raise ValueError("only one of hnsw, spann, or diskann may be provided")
 
     result = CreateCollectionConfiguration()
 
     # Handle vector index configuration
-    if json_map.get("hnsw") is not None:
-        result["hnsw"] = json_to_create_hnsw_configuration(json_map["hnsw"])
+    if hnsw_raw is not None:
+        result["hnsw"] = json_to_create_hnsw_configuration(hnsw_raw)
 
-    if json_map.get("spann") is not None:
-        result["spann"] = json_to_create_spann_configuration(json_map["spann"])
+    if spann_raw is not None:
+        result["spann"] = json_to_create_spann_configuration(spann_raw)
+
+    if diskann_raw is not None:
+        result["diskann"] = json_to_create_diskann_configuration(diskann_raw)
 
     # Handle embedding function configuration
     if json_map.get("embedding_function") is not None:
@@ -343,6 +428,7 @@ def create_collection_configuration_to_json(
     ef_config: Dict[str, Any] | None = None
     hnsw_config = config.get("hnsw")
     spann_config = config.get("spann")
+    diskann_config = config.get("diskann")
     if hnsw_config is not None:
         try:
             hnsw_config = cast(CreateHNSWConfiguration, hnsw_config)
@@ -353,9 +439,14 @@ def create_collection_configuration_to_json(
             spann_config = cast(CreateSpannConfiguration, spann_config)
         except Exception as e:
             raise ValueError(f"not a valid spann config: {e}")
+    if diskann_config is not None:
+        try:
+            diskann_config = cast(CreateDiskAnnConfiguration, diskann_config)
+        except Exception as e:
+            raise ValueError(f"not a valid diskann config: {e}")
 
-    if hnsw_config is not None and spann_config is not None:
-        raise ValueError("hnsw and spann cannot both be provided")
+    if _count_vector_index_configs(hnsw_config, spann_config, diskann_config) > 1:
+        raise ValueError("only one of hnsw, spann, or diskann may be provided")
 
     if config.get("embedding_function") is None:
         ef = None
@@ -363,6 +454,7 @@ def create_collection_configuration_to_json(
         return {
             "hnsw": hnsw_config,
             "spann": spann_config,
+            "diskann": diskann_config,
             "embedding_function": ef_config,
         }
 
@@ -378,16 +470,22 @@ def create_collection_configuration_to_json(
             # then validate the space afterwards based on the supported spaces of the embedding function,
             # warn if space is not supported
 
-            if hnsw_config is None and spann_config is None:
+            if (
+                hnsw_config is None
+                and spann_config is None
+                and diskann_config is None
+            ):
                 if metadata is None or metadata.get("hnsw:space") is None:
                     # this populates space from ef if not provided in either config
                     hnsw_config = CreateHNSWConfiguration(space=ef.default_space())
 
-            # if hnsw config or spann config exists but space is not provided, populate it from ef
+            # if vector index config exists but space is not provided, populate it from ef
             if hnsw_config is not None and hnsw_config.get("space") is None:
                 hnsw_config["space"] = ef.default_space()
             if spann_config is not None and spann_config.get("space") is None:
                 spann_config["space"] = ef.default_space()
+            if diskann_config is not None and diskann_config.get("space") is None:
+                diskann_config["space"] = ef.default_space()
 
             # Validate space compatibility with embedding function
             if hnsw_config is not None:
@@ -404,11 +502,19 @@ def create_collection_configuration_to_json(
                         UserWarning,
                         stacklevel=2,
                     )
+            if diskann_config is not None:
+                if diskann_config.get("space") not in ef.supported_spaces():
+                    warnings.warn(
+                        f"space {diskann_config.get('space')} is not supported by {ef.name()}. Supported spaces: {ef.supported_spaces()}",
+                        UserWarning,
+                        stacklevel=2,
+                    )
 
             # only validate space from metadata if config is not provided
             if (
                 hnsw_config is None
                 and spann_config is None
+                and diskann_config is None
                 and metadata is not None
                 and metadata.get("hnsw:space") is not None
             ):
@@ -437,6 +543,7 @@ def create_collection_configuration_to_json(
     return {
         "hnsw": hnsw_config,
         "spann": spann_config,
+        "diskann": diskann_config,
         "embedding_function": ef_config,
     }
 
@@ -505,9 +612,26 @@ def json_to_update_spann_configuration(
     return config
 
 
+class UpdateDiskAnnConfiguration(TypedDict, total=False):
+    search_list_size: int
+    beam_width: int
+
+
+def json_to_update_diskann_configuration(
+    json_map: Dict[str, Any]
+) -> UpdateDiskAnnConfiguration:
+    config: UpdateDiskAnnConfiguration = {}
+    if "search_list_size" in json_map:
+        config["search_list_size"] = json_map["search_list_size"]
+    if "beam_width" in json_map:
+        config["beam_width"] = json_map["beam_width"]
+    return config
+
+
 class UpdateCollectionConfiguration(TypedDict, total=False):
     hnsw: Optional[UpdateHNSWConfiguration]
     spann: Optional[UpdateSpannConfiguration]
+    diskann: Optional[UpdateDiskAnnConfiguration]
     embedding_function: Optional[EmbeddingFunction]  # type: ignore
 
 
@@ -563,9 +687,18 @@ def update_collection_configuration_to_json(
     """Convert an UpdateCollectionConfiguration to a JSON-serializable dict"""
     hnsw_config = config.get("hnsw")
     spann_config = config.get("spann")
+    diskann_config = config.get("diskann")
     ef = config.get("embedding_function")
-    if hnsw_config is None and spann_config is None and ef is None:
+    if (
+        hnsw_config is None
+        and spann_config is None
+        and diskann_config is None
+        and ef is None
+    ):
         return {}
+
+    if _count_vector_index_configs(hnsw_config, spann_config, diskann_config) > 1:
+        raise ValueError("only one of hnsw, spann, or diskann may be provided")
 
     if hnsw_config is not None:
         try:
@@ -578,6 +711,12 @@ def update_collection_configuration_to_json(
             spann_config = cast(UpdateSpannConfiguration, spann_config)
         except Exception as e:
             raise ValueError(f"not a valid spann config: {e}")
+
+    if diskann_config is not None:
+        try:
+            diskann_config = cast(UpdateDiskAnnConfiguration, diskann_config)
+        except Exception as e:
+            raise ValueError(f"not a valid diskann config: {e}")
 
     ef_config: Dict[str, Any] | None = None
     if ef is not None:
@@ -597,6 +736,7 @@ def update_collection_configuration_to_json(
     return {
         "hnsw": hnsw_config,
         "spann": spann_config,
+        "diskann": diskann_config,
         "embedding_function": ef_config,
     }
 
@@ -613,17 +753,23 @@ def load_update_collection_configuration_from_json(
     json_map: Dict[str, Any]
 ) -> UpdateCollectionConfiguration:
     """Convert a JSON dict to an UpdateCollectionConfiguration"""
-    if json_map.get("hnsw") is not None and json_map.get("spann") is not None:
-        raise ValueError("hnsw and spann cannot both be provided")
+    hnsw_raw = json_map.get("hnsw")
+    spann_raw = json_map.get("spann")
+    diskann_raw = json_map.get("diskann")
+    if _count_vector_index_configs(hnsw_raw, spann_raw, diskann_raw) > 1:
+        raise ValueError("only one of hnsw, spann, or diskann may be provided")
 
     result = UpdateCollectionConfiguration()
 
     # Handle vector index configurations
-    if json_map.get("hnsw") is not None:
-        result["hnsw"] = json_to_update_hnsw_configuration(json_map["hnsw"])
+    if hnsw_raw is not None:
+        result["hnsw"] = json_to_update_hnsw_configuration(hnsw_raw)
 
-    if json_map.get("spann") is not None:
-        result["spann"] = json_to_update_spann_configuration(json_map["spann"])
+    if spann_raw is not None:
+        result["spann"] = json_to_update_spann_configuration(spann_raw)
+
+    if diskann_raw is not None:
+        result["diskann"] = json_to_update_diskann_configuration(diskann_raw)
 
     # Handle embedding function
     if json_map.get("embedding_function") is not None:
@@ -685,6 +831,19 @@ def overwrite_spann_configuration(
     return cast(SpannConfiguration, result)
 
 
+def overwrite_diskann_configuration(
+    existing_diskann_config: DiskAnnConfiguration,
+    update_diskann_config: UpdateDiskAnnConfiguration,
+) -> DiskAnnConfiguration:
+    """Overwrite a DiskAnnConfiguration with a new configuration"""
+    result = dict(existing_diskann_config)
+    update_fields = ["search_list_size", "beam_width"]
+    for field in update_fields:
+        if field in update_diskann_config:
+            result[field] = update_diskann_config[field]  # type: ignore
+    return cast(DiskAnnConfiguration, result)
+
+
 # TODO: make warnings prettier and add link to migration docs
 def overwrite_embedding_function(
     existing_embedding_function: EmbeddingFunction,  # type: ignore
@@ -721,8 +880,9 @@ def overwrite_collection_configuration(
     """Overwrite a CollectionConfiguration with a new configuration"""
     update_spann = update_config.get("spann")
     update_hnsw = update_config.get("hnsw")
-    if update_spann is not None and update_hnsw is not None:
-        raise ValueError("hnsw and spann cannot both be provided")
+    update_diskann = update_config.get("diskann")
+    if _count_vector_index_configs(update_hnsw, update_spann, update_diskann) > 1:
+        raise ValueError("only one of hnsw, spann, or diskann may be provided")
 
     # Handle HNSW configuration update
 
@@ -739,6 +899,12 @@ def overwrite_collection_configuration(
             updated_spann_config, update_spann
         )
 
+    updated_diskann_config = existing_config.get("diskann")
+    if updated_diskann_config is not None and update_diskann is not None:
+        updated_diskann_config = overwrite_diskann_configuration(
+            updated_diskann_config, update_diskann
+        )
+
     # Handle embedding function update
     updated_embedding_function = existing_config.get("embedding_function")
     update_ef = update_config.get("embedding_function")
@@ -753,6 +919,7 @@ def overwrite_collection_configuration(
     return CollectionConfiguration(
         hnsw=updated_hnsw_config,
         spann=updated_spann_config,
+        diskann=updated_diskann_config,
         embedding_function=updated_embedding_function,
     )
 
@@ -882,6 +1049,20 @@ def update_schema_from_collection_configuration(
                 spann_config.search_nprobe = update_spann["search_nprobe"]
             if "ef_search" in update_spann:
                 spann_config.ef_search = update_spann["ef_search"]
+
+        elif "diskann" in configuration and configuration["diskann"] is not None:
+            if vector_index.config.diskann is None:
+                raise ValueError(
+                    "Trying to update DiskANN config but schema uses a different index"
+                )
+
+            diskann_config = vector_index.config.diskann
+            update_diskann = configuration["diskann"]
+
+            if "search_list_size" in update_diskann:
+                diskann_config.search_list_size = update_diskann["search_list_size"]
+            if "beam_width" in update_diskann:
+                diskann_config.beam_width = update_diskann["beam_width"]
 
         # Update embedding function if present
         if (

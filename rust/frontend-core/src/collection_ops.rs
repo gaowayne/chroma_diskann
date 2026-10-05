@@ -62,6 +62,7 @@ pub fn supported_segment_types(kind: ExecutorKind) -> Vec<SegmentType> {
         ExecutorKind::Local => vec![
             SegmentType::HnswLocalMemory,
             SegmentType::HnswLocalPersisted,
+            SegmentType::DiskAnn,
             SegmentType::Sqlite,
         ],
     }
@@ -91,14 +92,19 @@ pub fn plan_create_collection(
 
     if let Some(config) = configuration.as_ref() {
         match &config.vector_index {
-            VectorIndexConfiguration::Spann { .. } => {
+            VectorIndexConfiguration::Spann(_) => {
                 if !supported.contains(&SegmentType::Spann)
                     && !supported.contains(&SegmentType::QuantizedSpann)
                 {
                     return Err(CreateCollectionError::SpannNotImplemented);
                 }
             }
-            VectorIndexConfiguration::Hnsw { .. } => {
+            VectorIndexConfiguration::DiskAnn(_) => {
+                if !supported.contains(&SegmentType::DiskAnn) {
+                    return Err(CreateCollectionError::DiskAnnNotSupported);
+                }
+            }
+            VectorIndexConfiguration::Hnsw(_) => {
                 if !supported.contains(&SegmentType::HnswDistributed)
                     && !supported.contains(&SegmentType::HnswLocalMemory)
                     && !supported.contains(&SegmentType::HnswLocalPersisted)
@@ -115,6 +121,11 @@ pub fn plan_create_collection(
                 && !supported.contains(&SegmentType::QuantizedSpann)
             {
                 return Err(CreateCollectionError::SpannNotImplemented);
+            }
+        }
+        KnnIndex::DiskAnn => {
+            if !supported.contains(&SegmentType::DiskAnn) {
+                return Err(CreateCollectionError::DiskAnnNotSupported);
             }
         }
         KnnIndex::Hnsw => {
@@ -169,12 +180,20 @@ pub fn plan_create_collection(
                         } else {
                             vector_segment_type = SegmentType::Spann;
                         }
+                    } else if schema.get_internal_diskann_config().is_some() {
+                        return Err(CreateCollectionError::DiskAnnNotSupported);
                     }
                 }
             }
             if let Some(config) = configuration.as_ref() {
-                if matches!(config.vector_index, VectorIndexConfiguration::Spann(_)) {
-                    vector_segment_type = SegmentType::Spann;
+                match config.vector_index {
+                    VectorIndexConfiguration::Spann(_) => {
+                        vector_segment_type = SegmentType::Spann;
+                    }
+                    VectorIndexConfiguration::DiskAnn(_) => {
+                        return Err(CreateCollectionError::DiskAnnNotSupported);
+                    }
+                    VectorIndexConfiguration::Hnsw(_) => {}
                 }
             }
 
@@ -219,10 +238,24 @@ pub fn plan_create_collection(
                 }
             }
 
+            let mut vector_segment_type = SegmentType::HnswLocalPersisted;
+            if enable_schema {
+                if let Some(schema) = reconciled_schema.as_ref() {
+                    if schema.get_internal_diskann_config().is_some() {
+                        vector_segment_type = SegmentType::DiskAnn;
+                    }
+                }
+            }
+            if let Some(config) = configuration.as_ref() {
+                if matches!(config.vector_index, VectorIndexConfiguration::DiskAnn(_)) {
+                    vector_segment_type = SegmentType::DiskAnn;
+                }
+            }
+
             vec![
                 Segment {
                     id: SegmentUuid::new(),
-                    r#type: SegmentType::HnswLocalPersisted,
+                    r#type: vector_segment_type,
                     scope: SegmentScope::VECTOR,
                     collection: collection_id,
                     metadata: None,
@@ -309,6 +342,40 @@ mod tests {
             .segments
             .iter()
             .any(|s| s.r#type == SegmentType::Sqlite));
+    }
+
+    #[test]
+    fn local_diskann_config_selects_diskann_segment() {
+        let plan = plan_create_collection(
+            Some(chroma_types::InternalCollectionConfiguration::default_diskann()),
+            None,
+            ExecutorKind::Local,
+            &local_supported(),
+            true,
+            KnnIndex::Hnsw,
+            TenantFeatureFlags::default(),
+        )
+        .expect("plan");
+
+        assert!(plan
+            .segments
+            .iter()
+            .any(|s| s.r#type == SegmentType::DiskAnn && s.scope == SegmentScope::VECTOR));
+    }
+
+    #[test]
+    fn distributed_rejects_diskann() {
+        let err = plan_create_collection(
+            Some(chroma_types::InternalCollectionConfiguration::default_diskann()),
+            None,
+            ExecutorKind::Distributed,
+            &distributed_supported(),
+            true,
+            KnnIndex::Hnsw,
+            TenantFeatureFlags::default(),
+        )
+        .expect_err("distributed should not plan DiskANN yet");
+        assert!(matches!(err, CreateCollectionError::DiskAnnNotSupported));
     }
 
     #[test]

@@ -251,6 +251,12 @@ impl InMemoryFrontend {
         ) {
             return Err(CreateCollectionError::SpannNotImplemented);
         }
+        if matches!(
+            collection.config.vector_index,
+            VectorIndexConfiguration::DiskAnn(_)
+        ) {
+            return Err(CreateCollectionError::DiskAnnNotSupported);
+        }
 
         let metadata_segment = test_segment(
             collection.collection_id,

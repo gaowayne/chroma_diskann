@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use chroma_config::registry::{Injectable, Registry};
 use chroma_config::Configurable;
 use chroma_error::{ChromaError, ErrorCodes};
+use chroma_segment::local_diskann::LocalDiskAnnSegmentReaderError;
 use chroma_segment::local_hnsw::LocalHnswSegmentReaderError;
 use chroma_segment::local_segment_manager::{LocalSegmentManager, LocalSegmentManagerError};
 use chroma_segment::sqlite_metadata::{
@@ -16,7 +17,7 @@ use chroma_system::Handler;
 use chroma_system::{Component, ComponentContext};
 use chroma_types::{
     Chunk, CollectionUuid, DatabaseName, GetCollectionWithSegmentsError, LogRecord, Schema,
-    SchemaError,
+    SchemaError, SegmentType,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -158,24 +159,48 @@ impl Handler<BackfillMessage> for LocalCompactionManager {
         let mt_max_seq_id = metadata_reader
             .current_max_seq_id(&collection_and_segments.metadata_segment.id)
             .await?;
-        let hnsw_reader = self
-            .hnsw_segment_manager
-            .get_hnsw_reader(
-                &collection_and_segments.collection,
-                &collection_and_segments.vector_segment,
-                dim as usize,
-            )
-            .await;
-        let hnsw_max_seq_id = match hnsw_reader {
-            Ok(reader) => {
-                reader
-                    .current_max_seq_id(&collection_and_segments.vector_segment.id)
-                    .await?
+        let is_diskann =
+            collection_and_segments.vector_segment.r#type == SegmentType::DiskAnn;
+        let hnsw_max_seq_id = if is_diskann {
+            match self
+                .hnsw_segment_manager
+                .get_diskann_reader(
+                    &collection_and_segments.collection,
+                    &collection_and_segments.vector_segment,
+                    dim as usize,
+                )
+                .await
+            {
+                Ok(reader) => {
+                    reader
+                        .current_max_seq_id(&collection_and_segments.vector_segment.id)
+                        .await?
+                }
+                Err(LocalSegmentManagerError::LocalDiskAnnSegmentReaderError(
+                    LocalDiskAnnSegmentReaderError::UninitializedSegment,
+                )) => 0,
+                Err(e) => return Err(CompactionManagerError::HnswReaderConstructionError(e)),
             }
-            Err(LocalSegmentManagerError::LocalHnswSegmentReaderError(
-                LocalHnswSegmentReaderError::UninitializedSegment,
-            )) => 0,
-            Err(e) => return Err(CompactionManagerError::HnswReaderConstructionError(e)),
+        } else {
+            let hnsw_reader = self
+                .hnsw_segment_manager
+                .get_hnsw_reader(
+                    &collection_and_segments.collection,
+                    &collection_and_segments.vector_segment,
+                    dim as usize,
+                )
+                .await;
+            match hnsw_reader {
+                Ok(reader) => {
+                    reader
+                        .current_max_seq_id(&collection_and_segments.vector_segment.id)
+                        .await?
+                }
+                Err(LocalSegmentManagerError::LocalHnswSegmentReaderError(
+                    LocalHnswSegmentReaderError::UninitializedSegment,
+                )) => 0,
+                Err(e) => return Err(CompactionManagerError::HnswReaderConstructionError(e)),
+            }
         };
         // Get the logs from log service beyond this offset to backfill.
         let dbname = DatabaseName::new(collection_and_segments.collection.database.clone())
@@ -243,20 +268,36 @@ impl Handler<BackfillMessage> for LocalCompactionManager {
         tx.commit()
             .await
             .map_err(|_| CompactionManagerError::MetadataApplyLogsFailed)?;
-        // Next apply it to the hnsw writer.
-        let mut hnsw_writer = self
-            .hnsw_segment_manager
-            .get_hnsw_writer(
-                &collection_and_segments.collection,
-                &collection_and_segments.vector_segment,
-                dim as usize,
-            )
-            .await
-            .map_err(|_| CompactionManagerError::GetHnswWriterFailed)?;
-        hnsw_writer
-            .apply_log_chunk(hnsw_data_chunk)
-            .await
-            .map_err(|_| CompactionManagerError::HnswApplyLogsError)?;
+        // Next apply it to the vector writer.
+        if collection_and_segments.vector_segment.r#type == SegmentType::DiskAnn {
+            let mut diskann_writer = self
+                .hnsw_segment_manager
+                .get_diskann_writer(
+                    &collection_and_segments.collection,
+                    &collection_and_segments.vector_segment,
+                    dim as usize,
+                )
+                .await
+                .map_err(|_| CompactionManagerError::GetHnswWriterFailed)?;
+            diskann_writer
+                .apply_log_chunk(hnsw_data_chunk)
+                .await
+                .map_err(|_| CompactionManagerError::HnswApplyLogsError)?;
+        } else {
+            let mut hnsw_writer = self
+                .hnsw_segment_manager
+                .get_hnsw_writer(
+                    &collection_and_segments.collection,
+                    &collection_and_segments.vector_segment,
+                    dim as usize,
+                )
+                .await
+                .map_err(|_| CompactionManagerError::GetHnswWriterFailed)?;
+            hnsw_writer
+                .apply_log_chunk(hnsw_data_chunk)
+                .await
+                .map_err(|_| CompactionManagerError::HnswApplyLogsError)?;
+        }
         Ok(())
     }
 }
@@ -290,24 +331,46 @@ impl Handler<PurgeLogsMessage> for LocalCompactionManager {
         let mt_max_seq_id = metadata_reader
             .current_max_seq_id(&collection_segments.metadata_segment.id)
             .await?;
-        let hnsw_reader = self
-            .hnsw_segment_manager
-            .get_hnsw_reader(
-                &collection,
-                &collection_segments.vector_segment,
-                dim as usize,
-            )
-            .await;
-        let hnsw_max_seq_id = match hnsw_reader {
-            Ok(reader) => {
-                reader
-                    .current_max_seq_id(&collection_segments.vector_segment.id)
-                    .await?
+        let hnsw_max_seq_id = if collection_segments.vector_segment.r#type == SegmentType::DiskAnn {
+            match self
+                .hnsw_segment_manager
+                .get_diskann_reader(
+                    &collection,
+                    &collection_segments.vector_segment,
+                    dim as usize,
+                )
+                .await
+            {
+                Ok(reader) => {
+                    reader
+                        .current_max_seq_id(&collection_segments.vector_segment.id)
+                        .await?
+                }
+                Err(LocalSegmentManagerError::LocalDiskAnnSegmentReaderError(
+                    LocalDiskAnnSegmentReaderError::UninitializedSegment,
+                )) => 0,
+                Err(e) => return Err(CompactionManagerError::HnswReaderConstructionError(e)),
             }
-            Err(LocalSegmentManagerError::LocalHnswSegmentReaderError(
-                LocalHnswSegmentReaderError::UninitializedSegment,
-            )) => 0,
-            Err(e) => return Err(CompactionManagerError::HnswReaderConstructionError(e)),
+        } else {
+            let hnsw_reader = self
+                .hnsw_segment_manager
+                .get_hnsw_reader(
+                    &collection,
+                    &collection_segments.vector_segment,
+                    dim as usize,
+                )
+                .await;
+            match hnsw_reader {
+                Ok(reader) => {
+                    reader
+                        .current_max_seq_id(&collection_segments.vector_segment.id)
+                        .await?
+                }
+                Err(LocalSegmentManagerError::LocalHnswSegmentReaderError(
+                    LocalHnswSegmentReaderError::UninitializedSegment,
+                )) => 0,
+                Err(e) => return Err(CompactionManagerError::HnswReaderConstructionError(e)),
+            }
         };
         let max_seq_id = mt_max_seq_id.min(hnsw_max_seq_id);
         self.log

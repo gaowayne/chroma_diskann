@@ -796,6 +796,8 @@ pub enum CreateCollectionError {
     Aborted(String),
     #[error("SPANN is still in development. Not allowed to created spann indexes")]
     SpannNotImplemented,
+    #[error("DiskANN is only supported on the local persistent client")]
+    DiskAnnNotSupported,
     #[error("HNSW is not supported on this platform")]
     HnswNotSupported,
     #[error("Failed to parse db id")]
@@ -817,6 +819,7 @@ impl ChromaError for CreateCollectionError {
             CreateCollectionError::Internal(err) => err.code(),
             CreateCollectionError::Aborted(_) => ErrorCodes::Aborted,
             CreateCollectionError::SpannNotImplemented => ErrorCodes::InvalidArgument,
+            CreateCollectionError::DiskAnnNotSupported => ErrorCodes::InvalidArgument,
             CreateCollectionError::HnswNotSupported => ErrorCodes::InvalidArgument,
             CreateCollectionError::DatabaseIdParseError => ErrorCodes::Internal,
             CreateCollectionError::InvalidSchema(e) => e.code(),

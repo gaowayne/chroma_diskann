@@ -49,6 +49,7 @@ impl LocalExecutor {
         vec![
             SegmentType::HnswLocalMemory,
             SegmentType::HnswLocalPersisted,
+            SegmentType::DiskAnn,
             SegmentType::Sqlite,
         ]
     }
@@ -116,22 +117,42 @@ impl LocalExecutor {
             .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
         if load_embedding {
             if let Some(dimensionality) = collection_and_segments.collection.dimension {
-                let hnsw_reader = self
-                    .hnsw_manager
-                    .get_hnsw_reader(
-                        &collection_and_segments.collection,
-                        &collection_and_segments.vector_segment,
-                        dimensionality as usize,
-                    )
-                    .await
-                    .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
-                for record in &mut result.result.records {
-                    record.embedding = Some(
-                        hnsw_reader
-                            .get_embedding_by_user_id(&record.id)
-                            .await
-                            .map_err(|err| ExecutorError::Internal(Box::new(err)))?,
-                    );
+                if collection_and_segments.vector_segment.r#type == SegmentType::DiskAnn {
+                    let reader = self
+                        .hnsw_manager
+                        .get_diskann_reader(
+                            &collection_and_segments.collection,
+                            &collection_and_segments.vector_segment,
+                            dimensionality as usize,
+                        )
+                        .await
+                        .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
+                    for record in &mut result.result.records {
+                        record.embedding = Some(
+                            reader
+                                .get_embedding_by_user_id(&record.id)
+                                .await
+                                .map_err(|err| ExecutorError::Internal(Box::new(err)))?,
+                        );
+                    }
+                } else {
+                    let hnsw_reader = self
+                        .hnsw_manager
+                        .get_hnsw_reader(
+                            &collection_and_segments.collection,
+                            &collection_and_segments.vector_segment,
+                            dimensionality as usize,
+                        )
+                        .await
+                        .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
+                    for record in &mut result.result.records {
+                        record.embedding = Some(
+                            hnsw_reader
+                                .get_embedding_by_user_id(&record.id)
+                                .await
+                                .map_err(|err| ExecutorError::Internal(Box::new(err)))?,
+                        );
+                    }
                 }
             }
         }
@@ -205,83 +226,153 @@ impl LocalExecutor {
             }
         };
 
-        let hnsw_reader = self
-            .hnsw_manager
-            .get_hnsw_reader(
-                &collection_and_segments.collection,
-                &collection_and_segments.vector_segment,
-                dimensionality as usize,
-            )
-            .await
-            .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
-
-        let mut allowed_offset_ids = Vec::new();
-        for user_id in allowed_user_ids {
-            let offset_id = hnsw_reader
-                .get_offset_id_by_user_id(&user_id)
-                .await
-                .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
-            allowed_offset_ids.push(offset_id);
-        }
-
-        let hnsw_config = collection_and_segments
-            .collection
-            .schema
-            .as_ref()
-            .map(|schema| {
-                schema.get_internal_hnsw_config_with_legacy_fallback(
-                    &plan.scan.collection_and_segments.vector_segment,
-                )
-            })
-            .transpose()
-            .map_err(|err| ExecutorError::Internal(Box::new(err)))?
-            .flatten()
-            .ok_or(ExecutorError::CollectionMissingHnswConfiguration)?;
-
-        let distance_function = hnsw_config.space;
+        let is_diskann =
+            collection_and_segments.vector_segment.r#type == SegmentType::DiskAnn;
 
         let mut results = Vec::new();
         let mut returned_user_ids = Vec::new();
-        for embedding in plan.knn.embeddings {
-            let query_embedding = if let Space::Cosine = distance_function {
-                normalize(&embedding)
-            } else {
-                embedding
-            };
-            let distances = hnsw_reader
-                .query_embedding(
-                    allowed_offset_ids.as_slice(),
-                    query_embedding,
-                    plan.knn.fetch,
+
+        if is_diskann {
+            let reader = self
+                .hnsw_manager
+                .get_diskann_reader(
+                    &collection_and_segments.collection,
+                    &collection_and_segments.vector_segment,
+                    dimensionality as usize,
+                )
+                .await
+                .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
+            let mut allowed_offset_ids = Vec::new();
+            for user_id in allowed_user_ids {
+                let offset_id = reader
+                    .get_offset_id_by_user_id(&user_id)
+                    .await
+                    .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
+                allowed_offset_ids.push(offset_id);
+            }
+            let space = collection_and_segments
+                .collection
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.get_internal_diskann_config())
+                .or_else(|| collection_and_segments.collection.config.get_diskann_config())
+                .map(|config| config.space)
+                .unwrap_or(Space::L2);
+            for embedding in plan.knn.embeddings {
+                let query_embedding = if let Space::Cosine = space {
+                    normalize(&embedding)
+                } else {
+                    embedding
+                };
+                let distances = reader
+                    .query_embedding(
+                        allowed_offset_ids.as_slice(),
+                        query_embedding,
+                        plan.knn.fetch,
+                    )
+                    .await
+                    .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
+                let mut records = Vec::new();
+                for RecordMeasure { offset_id, measure } in distances {
+                    let user_id = reader
+                        .get_user_id_by_offset_id(offset_id)
+                        .await
+                        .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
+                    returned_user_ids.push(user_id.clone());
+                    records.push(KnnProjectionRecord {
+                        record: ProjectionRecord {
+                            id: user_id,
+                            document: None,
+                            embedding: plan.proj.projection.embedding.then_some(
+                                reader
+                                    .get_embedding_by_offset_id(offset_id)
+                                    .await
+                                    .map_err(|err| ExecutorError::Internal(Box::new(err)))?,
+                            ),
+                            metadata: None,
+                        },
+                        distance: plan.proj.distance.then_some(measure),
+                    });
+                }
+                results.push(KnnProjectionOutput { records });
+            }
+        } else {
+            let hnsw_reader = self
+                .hnsw_manager
+                .get_hnsw_reader(
+                    &collection_and_segments.collection,
+                    &collection_and_segments.vector_segment,
+                    dimensionality as usize,
                 )
                 .await
                 .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
 
-            let mut records = Vec::new();
-            for RecordMeasure { offset_id, measure } in distances {
-                let user_id = hnsw_reader
-                    .get_user_id_by_offset_id(offset_id)
+            let mut allowed_offset_ids = Vec::new();
+            for user_id in allowed_user_ids {
+                let offset_id = hnsw_reader
+                    .get_offset_id_by_user_id(&user_id)
                     .await
                     .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
-                returned_user_ids.push(user_id.clone());
-                let knn_projection = KnnProjectionRecord {
-                    record: ProjectionRecord {
-                        id: user_id,
-                        document: None,
-                        embedding: plan.proj.projection.embedding.then_some(
-                            hnsw_reader
-                                .get_embedding_by_offset_id(offset_id)
-                                .await
-                                .map_err(|err| ExecutorError::Internal(Box::new(err)))?,
-                        ),
-                        metadata: None,
-                    },
-                    distance: plan.proj.distance.then_some(measure),
-                };
-                records.push(knn_projection);
+                allowed_offset_ids.push(offset_id);
             }
 
-            results.push(KnnProjectionOutput { records });
+            let hnsw_config = collection_and_segments
+                .collection
+                .schema
+                .as_ref()
+                .map(|schema| {
+                    schema.get_internal_hnsw_config_with_legacy_fallback(
+                        &plan.scan.collection_and_segments.vector_segment,
+                    )
+                })
+                .transpose()
+                .map_err(|err| ExecutorError::Internal(Box::new(err)))?
+                .flatten()
+                .ok_or(ExecutorError::CollectionMissingHnswConfiguration)?;
+
+            let distance_function = hnsw_config.space;
+
+            for embedding in plan.knn.embeddings {
+                let query_embedding = if let Space::Cosine = distance_function {
+                    normalize(&embedding)
+                } else {
+                    embedding
+                };
+                let distances = hnsw_reader
+                    .query_embedding(
+                        allowed_offset_ids.as_slice(),
+                        query_embedding,
+                        plan.knn.fetch,
+                    )
+                    .await
+                    .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
+
+                let mut records = Vec::new();
+                for RecordMeasure { offset_id, measure } in distances {
+                    let user_id = hnsw_reader
+                        .get_user_id_by_offset_id(offset_id)
+                        .await
+                        .map_err(|err| ExecutorError::Internal(Box::new(err)))?;
+                    returned_user_ids.push(user_id.clone());
+                    let knn_projection = KnnProjectionRecord {
+                        record: ProjectionRecord {
+                            id: user_id,
+                            document: None,
+                            embedding: plan.proj.projection.embedding.then_some(
+                                hnsw_reader
+                                    .get_embedding_by_offset_id(offset_id)
+                                    .await
+                                    .map_err(|err| ExecutorError::Internal(Box::new(err)))?,
+                            ),
+                            metadata: None,
+                        },
+                        distance: plan.proj.distance.then_some(measure),
+                    };
+                    records.push(knn_projection);
+                }
+
+                results.push(KnnProjectionOutput { records });
+            }
         }
 
         if plan.proj.projection.document || plan.proj.projection.metadata {

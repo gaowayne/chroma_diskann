@@ -37,6 +37,7 @@ chroma-blockstore = { workspace = true }
 chroma-cache = { workspace = true }
 chroma-config = { workspace = true }
 chroma-distance = { workspace = true }
+chroma-diskann = { workspace = true }
 chroma-error = { workspace = true }
 chroma-index = { workspace = true }
 chroma-sqlite = { workspace = true }

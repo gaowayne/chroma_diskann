@@ -1,17 +1,20 @@
 use crate::{
-    collection_schema::is_embedding_function_default, default_batch_size, default_construction_ef,
-    default_construction_ef_spann, default_initial_lambda, default_m, default_m_spann,
-    default_merge_threshold, default_nreplica_count, default_num_centers_to_merge_to,
-    default_num_samples_kmeans, default_num_threads, default_reassign_neighbor_count,
-    default_resize_factor, default_search_ef, default_search_ef_spann, default_search_nprobe,
+    collection_schema::is_embedding_function_default, default_alpha, default_batch_size,
+    default_beam_width, default_build_list_size, default_construction_ef,
+    default_construction_ef_spann, default_graph_degree, default_initial_lambda, default_m,
+    default_m_spann, default_memory_budget_gb, default_merge_threshold, default_nreplica_count,
+    default_num_centers_to_merge_to, default_num_samples_kmeans, default_diskann_num_threads,
+    default_num_threads, default_pq_bytes, default_reassign_neighbor_count, default_resize_factor,
+    default_search_ef, default_search_ef_spann, default_search_list_size, default_search_nprobe,
     default_search_rng_epsilon, default_search_rng_factor, default_space, default_split_threshold,
     default_sync_threshold, default_write_nprobe, default_write_rng_epsilon,
     default_write_rng_factor,
 };
 use crate::{
-    HnswConfiguration, HnswParametersFromSegmentError, InternalHnswConfiguration,
-    InternalSpannConfiguration, Metadata, Schema, Segment, SpannConfiguration,
-    UpdateHnswConfiguration, UpdateSpannConfiguration, VectorIndexConfig, EMBEDDING_KEY,
+    DiskAnnConfiguration, HnswConfiguration, HnswParametersFromSegmentError,
+    InternalDiskAnnConfiguration, InternalHnswConfiguration, InternalSpannConfiguration, Metadata,
+    Schema, Segment, SpannConfiguration, UpdateDiskAnnConfiguration, UpdateHnswConfiguration,
+    UpdateSpannConfiguration, VectorIndexConfig, EMBEDDING_KEY,
 };
 use chroma_error::{ChromaError, ErrorCodes};
 use serde::{Deserialize, Serialize};
@@ -24,6 +27,16 @@ pub enum KnnIndex {
     Hnsw,
     #[serde(alias = "spann")]
     Spann,
+    #[serde(alias = "diskann")]
+    DiskAnn,
+}
+
+fn vector_index_config_count(
+    hnsw: &Option<HnswConfiguration>,
+    spann: &Option<SpannConfiguration>,
+    diskann: &Option<DiskAnnConfiguration>,
+) -> usize {
+    usize::from(hnsw.is_some()) + usize::from(spann.is_some()) + usize::from(diskann.is_some())
 }
 
 pub fn default_default_knn_index() -> KnnIndex {
@@ -65,6 +78,7 @@ pub struct EmbeddingFunctionNewConfiguration {
 pub enum VectorIndexConfiguration {
     Hnsw(InternalHnswConfiguration),
     Spann(InternalSpannConfiguration),
+    DiskAnn(InternalDiskAnnConfiguration),
 }
 
 impl VectorIndexConfiguration {
@@ -79,13 +93,14 @@ impl VectorIndexConfiguration {
             ) => {
                 *spann = spann_new.clone();
             }
-            (VectorIndexConfiguration::Hnsw(_), VectorIndexConfiguration::Spann(_)) => {
-                // For now, we don't support converting between different index types
-                // This could be implemented in the future if needed
+            (
+                VectorIndexConfiguration::DiskAnn(diskann),
+                VectorIndexConfiguration::DiskAnn(diskann_new),
+            ) => {
+                *diskann = diskann_new.clone();
             }
-            (VectorIndexConfiguration::Spann(_), VectorIndexConfiguration::Hnsw(_)) => {
+            _ => {
                 // For now, we don't support converting between different index types
-                // This could be implemented in the future if needed
             }
         }
     }
@@ -99,6 +114,12 @@ impl From<InternalHnswConfiguration> for VectorIndexConfiguration {
 impl From<InternalSpannConfiguration> for VectorIndexConfiguration {
     fn from(config: InternalSpannConfiguration) -> Self {
         VectorIndexConfiguration::Spann(config)
+    }
+}
+
+impl From<InternalDiskAnnConfiguration> for VectorIndexConfiguration {
+    fn from(config: InternalDiskAnnConfiguration) -> Self {
+        VectorIndexConfiguration::DiskAnn(config)
     }
 }
 
@@ -135,6 +156,13 @@ impl InternalCollectionConfiguration {
     pub fn default_spann() -> Self {
         Self {
             vector_index: VectorIndexConfiguration::Spann(InternalSpannConfiguration::default()),
+            embedding_function: None,
+        }
+    }
+
+    pub fn default_diskann() -> Self {
+        Self {
+            vector_index: VectorIndexConfiguration::DiskAnn(InternalDiskAnnConfiguration::default()),
             embedding_function: None,
         }
     }
@@ -176,6 +204,17 @@ impl InternalCollectionConfiguration {
                     && spann_config.max_neighbors == default_m_spann()
                     && spann_config.space == default_space()
             }
+            VectorIndexConfiguration::DiskAnn(diskann_config) => {
+                diskann_config.graph_degree == default_graph_degree()
+                    && diskann_config.build_list_size == default_build_list_size()
+                    && diskann_config.search_list_size == default_search_list_size()
+                    && diskann_config.beam_width == default_beam_width()
+                    && diskann_config.pq_bytes == default_pq_bytes()
+                    && diskann_config.num_threads == default_diskann_num_threads()
+                    && diskann_config.memory_budget_gb == default_memory_budget_gb()
+                    && diskann_config.alpha == default_alpha()
+                    && diskann_config.space == default_space()
+            }
         }
     }
 
@@ -207,6 +246,13 @@ impl InternalCollectionConfiguration {
     pub fn get_spann_config(&self) -> Option<InternalSpannConfiguration> {
         match &self.vector_index {
             VectorIndexConfiguration::Spann(config) => Some(config.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn get_diskann_config(&self) -> Option<InternalDiskAnnConfiguration> {
+        match &self.vector_index {
+            VectorIndexConfiguration::DiskAnn(config) => Some(config.clone()),
             _ => None,
         }
     }
@@ -260,6 +306,20 @@ impl InternalCollectionConfiguration {
                         }
                     }
                 }
+                UpdateVectorIndexConfiguration::DiskAnn(diskann_config) => {
+                    if let VectorIndexConfiguration::DiskAnn(current_config) =
+                        &mut self.vector_index
+                    {
+                        if let Some(update_config) = diskann_config {
+                            if let Some(search_list_size) = update_config.search_list_size {
+                                current_config.search_list_size = search_list_size;
+                            }
+                            if let Some(beam_width) = update_config.beam_width {
+                                current_config.beam_width = beam_width;
+                            }
+                        }
+                    }
+                }
             }
         }
         // Update embedding_function if it exists in the update configuration
@@ -275,39 +335,41 @@ impl InternalCollectionConfiguration {
     ) -> Result<Self, CollectionConfigurationToInternalConfigurationError> {
         let mut hnsw: Option<HnswConfiguration> = value.hnsw;
         let spann: Option<SpannConfiguration> = value.spann;
+        let diskann: Option<DiskAnnConfiguration> = value.diskann;
 
-        // if neither hnsw nor spann is provided, use the collection metadata to build an hnsw configuration
-        // the match then handles cases where hnsw is provided, and correctly routes to either spann or hnsw configuration
-        // based on the default_knn_index
-        if hnsw.is_none() && spann.is_none() {
+        if vector_index_config_count(&hnsw, &spann, &diskann) > 1 {
+            return Err(
+                CollectionConfigurationToInternalConfigurationError::MultipleVectorIndexConfigurations,
+            );
+        }
+
+        // If no explicit vector index config is provided, use collection metadata to build HNSW.
+        if hnsw.is_none() && spann.is_none() && diskann.is_none() {
             let hnsw_config_from_metadata =
-            InternalHnswConfiguration::from_legacy_segment_metadata(&metadata).map_err(|e| {
-                CollectionConfigurationToInternalConfigurationError::HnswParametersFromSegmentError(
-                    e,
-                )
-            })?;
+                InternalHnswConfiguration::from_legacy_segment_metadata(&metadata).map_err(|e| {
+                    CollectionConfigurationToInternalConfigurationError::HnswParametersFromSegmentError(
+                        e,
+                    )
+                })?;
             hnsw = Some(hnsw_config_from_metadata.into());
         }
 
-        match (hnsw, spann) {
-            (Some(_), Some(_)) => Err(CollectionConfigurationToInternalConfigurationError::MultipleVectorIndexConfigurations),
-            (Some(hnsw), None) => {
+        match (hnsw, spann, diskann) {
+            (Some(hnsw), None, None) => {
                 hnsw.validate().map_err(|err| {
                     CollectionConfigurationToInternalConfigurationError::HnswParametersFromSegmentError(
                         HnswParametersFromSegmentError::InvalidParameters(err),
                     )
                 })?;
                 match default_knn_index {
-                    // Create a spann index. Only inherit the space if it exists in the hnsw config or legacy metadata.
-                    // This is for backwards compatibility so that users who migrate to distributed
-                    // from local don't break their code.
                     KnnIndex::Spann => {
                         let mut hnsw: InternalHnswConfiguration = hnsw.into();
                         let temp_config = InternalCollectionConfiguration {
                             vector_index: VectorIndexConfiguration::Hnsw(hnsw.clone()),
                             embedding_function: None,
                         };
-                        let hnsw_params = temp_config.get_hnsw_config_from_legacy_metadata(&metadata)?;
+                        let hnsw_params =
+                            temp_config.get_hnsw_config_from_legacy_metadata(&metadata)?;
                         if let Some(hnsw_params) = hnsw_params {
                             hnsw = hnsw_params;
                         }
@@ -315,33 +377,93 @@ impl InternalCollectionConfiguration {
                             space: hnsw.space,
                             ..Default::default()
                         };
-
                         Ok(InternalCollectionConfiguration {
                             vector_index: VectorIndexConfiguration::Spann(spann_config),
                             embedding_function: value.embedding_function,
                         })
-                    },
+                    }
+                    KnnIndex::DiskAnn => {
+                        let mut hnsw: InternalHnswConfiguration = hnsw.into();
+                        let temp_config = InternalCollectionConfiguration {
+                            vector_index: VectorIndexConfiguration::Hnsw(hnsw.clone()),
+                            embedding_function: None,
+                        };
+                        let hnsw_params =
+                            temp_config.get_hnsw_config_from_legacy_metadata(&metadata)?;
+                        if let Some(hnsw_params) = hnsw_params {
+                            hnsw = hnsw_params;
+                        }
+                        let diskann_config = InternalDiskAnnConfiguration {
+                            space: hnsw.space,
+                            ..Default::default()
+                        };
+                        Ok(InternalCollectionConfiguration {
+                            vector_index: VectorIndexConfiguration::DiskAnn(diskann_config),
+                            embedding_function: value.embedding_function,
+                        })
+                    }
                     KnnIndex::Hnsw => {
                         let hnsw: InternalHnswConfiguration = hnsw.into();
                         let mut internal_config = InternalCollectionConfiguration {
                             vector_index: VectorIndexConfiguration::Hnsw(hnsw),
                             embedding_function: value.embedding_function,
                         };
-                        let hnsw_params = internal_config.get_hnsw_config_from_legacy_metadata(&metadata)?;
+                        let hnsw_params =
+                            internal_config.get_hnsw_config_from_legacy_metadata(&metadata)?;
                         if let Some(hnsw_params) = hnsw_params {
-                            internal_config.vector_index = VectorIndexConfiguration::Hnsw(hnsw_params);
+                            internal_config.vector_index =
+                                VectorIndexConfiguration::Hnsw(hnsw_params);
                         }
                         Ok(internal_config)
                     }
                 }
             }
-            (None, Some(spann)) => {
+            (None, Some(spann), None) => match default_knn_index {
+                KnnIndex::Hnsw => {
+                    let internal_config = if let Some(space) = spann.space {
+                        InternalHnswConfiguration {
+                            space,
+                            ..Default::default()
+                        }
+                    } else {
+                        InternalHnswConfiguration::default()
+                    };
+                    Ok(InternalCollectionConfiguration {
+                        vector_index: VectorIndexConfiguration::Hnsw(internal_config),
+                        embedding_function: value.embedding_function,
+                    })
+                }
+                KnnIndex::Spann => {
+                    let spann: InternalSpannConfiguration = spann.into();
+                    Ok(InternalCollectionConfiguration {
+                        vector_index: spann.into(),
+                        embedding_function: value.embedding_function,
+                    })
+                }
+                KnnIndex::DiskAnn => {
+                    let internal_config = if let Some(space) = spann.space {
+                        InternalDiskAnnConfiguration {
+                            space,
+                            ..Default::default()
+                        }
+                    } else {
+                        InternalDiskAnnConfiguration::default()
+                    };
+                    Ok(InternalCollectionConfiguration {
+                        vector_index: VectorIndexConfiguration::DiskAnn(internal_config),
+                        embedding_function: value.embedding_function,
+                    })
+                }
+            },
+            (None, None, Some(diskann)) => {
+                diskann.validate().map_err(|err| {
+                    CollectionConfigurationToInternalConfigurationError::HnswParametersFromSegmentError(
+                        HnswParametersFromSegmentError::InvalidParameters(err),
+                    )
+                })?;
                 match default_knn_index {
-                    // Create a hnsw index. Only inherit the space if it exists in the spann config.
-                    // This is for backwards compatibility so that users who migrate to local
-                    // from distributed don't break their code.
                     KnnIndex::Hnsw => {
-                        let internal_config = if let Some(space) = spann.space {
+                        let internal_config = if let Some(space) = diskann.space {
                             InternalHnswConfiguration {
                                 space,
                                 ..Default::default()
@@ -355,24 +477,42 @@ impl InternalCollectionConfiguration {
                         })
                     }
                     KnnIndex::Spann => {
-                        let spann: InternalSpannConfiguration = spann.into();
+                        let internal_config = if let Some(space) = diskann.space {
+                            InternalSpannConfiguration {
+                                space,
+                                ..Default::default()
+                            }
+                        } else {
+                            InternalSpannConfiguration::default()
+                        };
                         Ok(InternalCollectionConfiguration {
-                            vector_index: spann.into(),
+                            vector_index: VectorIndexConfiguration::Spann(internal_config),
+                            embedding_function: value.embedding_function,
+                        })
+                    }
+                    KnnIndex::DiskAnn => {
+                        let diskann: InternalDiskAnnConfiguration = diskann.into();
+                        Ok(InternalCollectionConfiguration {
+                            vector_index: diskann.into(),
                             embedding_function: value.embedding_function,
                         })
                     }
                 }
             }
-            (None, None) => {
+            (None, None, None) => {
                 let vector_index = match default_knn_index {
                     KnnIndex::Hnsw => InternalHnswConfiguration::default().into(),
                     KnnIndex::Spann => InternalSpannConfiguration::default().into(),
+                    KnnIndex::DiskAnn => InternalDiskAnnConfiguration::default().into(),
                 };
                 Ok(InternalCollectionConfiguration {
                     vector_index,
                     embedding_function: value.embedding_function,
                 })
             }
+            _ => Err(
+                CollectionConfigurationToInternalConfigurationError::MultipleVectorIndexConfigurations,
+            ),
         }
     }
 }
@@ -381,9 +521,12 @@ impl TryFrom<CollectionConfiguration> for InternalCollectionConfiguration {
     type Error = CollectionConfigurationToInternalConfigurationError;
 
     fn try_from(value: CollectionConfiguration) -> Result<Self, Self::Error> {
-        match (value.hnsw, value.spann) {
-            (Some(_), Some(_)) => Err(Self::Error::MultipleVectorIndexConfigurations),
-            (Some(hnsw), None) => {
+        if vector_index_config_count(&value.hnsw, &value.spann, &value.diskann) > 1 {
+            return Err(Self::Error::MultipleVectorIndexConfigurations);
+        }
+
+        match (value.hnsw, value.spann, value.diskann) {
+            (Some(hnsw), None, None) => {
                 hnsw.validate().map_err(|err| {
                     CollectionConfigurationToInternalConfigurationError::HnswParametersFromSegmentError(
                         HnswParametersFromSegmentError::InvalidParameters(err),
@@ -395,17 +538,30 @@ impl TryFrom<CollectionConfiguration> for InternalCollectionConfiguration {
                     embedding_function: value.embedding_function,
                 })
             }
-            (None, Some(spann)) => {
+            (None, Some(spann), None) => {
                 let spann: InternalSpannConfiguration = spann.into();
                 Ok(InternalCollectionConfiguration {
                     vector_index: spann.into(),
                     embedding_function: value.embedding_function,
                 })
             }
-            (None, None) => Ok(InternalCollectionConfiguration {
+            (None, None, Some(diskann)) => {
+                diskann.validate().map_err(|err| {
+                    CollectionConfigurationToInternalConfigurationError::HnswParametersFromSegmentError(
+                        HnswParametersFromSegmentError::InvalidParameters(err),
+                    )
+                })?;
+                let diskann: InternalDiskAnnConfiguration = diskann.into();
+                Ok(InternalCollectionConfiguration {
+                    vector_index: diskann.into(),
+                    embedding_function: value.embedding_function,
+                })
+            }
+            (None, None, None) => Ok(InternalCollectionConfiguration {
                 vector_index: InternalHnswConfiguration::default().into(),
                 embedding_function: value.embedding_function,
             }),
+            _ => Err(Self::Error::MultipleVectorIndexConfigurations),
         }
     }
 }
@@ -435,15 +591,21 @@ impl TryFrom<&Schema> for InternalCollectionConfiguration {
             embedding_function,
             hnsw,
             spann,
-            ..
+            diskann,
         } = vector_config;
 
-        match (hnsw, spann) {
-            (Some(_), Some(_)) => Err(
-                "Vector index configuration must not contain both HNSW and SPANN settings"
+        let active = usize::from(hnsw.is_some())
+            + usize::from(spann.is_some())
+            + usize::from(diskann.is_some());
+        if active > 1 {
+            return Err(
+                "Vector index configuration must contain at most one of HNSW, SPANN, or DiskANN settings"
                     .to_string(),
-            ),
-            (Some(hnsw_config), None) => {
+            );
+        }
+
+        match (hnsw, spann, diskann) {
+            (Some(hnsw_config), None, None) => {
                 hnsw_config
                     .validate()
                     .map_err(|err| format!("Invalid HNSW configuration: {err}"))?;
@@ -453,20 +615,34 @@ impl TryFrom<&Schema> for InternalCollectionConfiguration {
                     embedding_function,
                 })
             }
-            (None, Some(spann_config)) => {
+            (None, Some(spann_config), None) => {
                 let internal_spann = (space.as_ref(), &spann_config).into();
                 Ok(InternalCollectionConfiguration {
                     vector_index: VectorIndexConfiguration::Spann(internal_spann),
                     embedding_function,
                 })
             }
-            (None, None) => {
+            (None, None, Some(diskann_config)) => {
+                diskann_config
+                    .validate()
+                    .map_err(|err| format!("Invalid DiskANN configuration: {err}"))?;
+                let internal_diskann = (space.as_ref(), &diskann_config).into();
+                Ok(InternalCollectionConfiguration {
+                    vector_index: VectorIndexConfiguration::DiskAnn(internal_diskann),
+                    embedding_function,
+                })
+            }
+            (None, None, None) => {
                 let internal_hnsw = (space.as_ref(), None).into();
                 Ok(InternalCollectionConfiguration {
                     vector_index: VectorIndexConfiguration::Hnsw(internal_hnsw),
                     embedding_function,
                 })
             }
+            _ => Err(
+                "Vector index configuration must contain at most one of HNSW, SPANN, or DiskANN settings"
+                    .to_string(),
+            ),
         }
     }
 }
@@ -494,6 +670,7 @@ impl ChromaError for CollectionConfigurationToInternalConfigurationError {
 pub struct CollectionConfiguration {
     pub hnsw: Option<HnswConfiguration>,
     pub spann: Option<SpannConfiguration>,
+    pub diskann: Option<DiskAnnConfiguration>,
     pub embedding_function: Option<EmbeddingFunctionConfiguration>,
 }
 
@@ -504,8 +681,12 @@ impl From<InternalCollectionConfiguration> for CollectionConfiguration {
                 VectorIndexConfiguration::Hnsw(config) => Some(config.into()),
                 _ => None,
             },
-            spann: match value.vector_index {
-                VectorIndexConfiguration::Spann(config) => Some(config.into()),
+            spann: match &value.vector_index {
+                VectorIndexConfiguration::Spann(config) => Some(config.clone().into()),
+                _ => None,
+            },
+            diskann: match value.vector_index {
+                VectorIndexConfiguration::DiskAnn(config) => Some(config.into()),
                 _ => None,
             },
             embedding_function: value.embedding_function,
@@ -519,6 +700,7 @@ impl From<InternalCollectionConfiguration> for CollectionConfiguration {
 pub enum UpdateVectorIndexConfiguration {
     Hnsw(Option<UpdateHnswConfiguration>),
     Spann(Option<UpdateSpannConfiguration>),
+    DiskAnn(Option<UpdateDiskAnnConfiguration>),
 }
 
 impl From<UpdateHnswConfiguration> for UpdateVectorIndexConfiguration {
@@ -530,6 +712,12 @@ impl From<UpdateHnswConfiguration> for UpdateVectorIndexConfiguration {
 impl From<UpdateSpannConfiguration> for UpdateVectorIndexConfiguration {
     fn from(config: UpdateSpannConfiguration) -> Self {
         UpdateVectorIndexConfiguration::Spann(Some(config))
+    }
+}
+
+impl From<UpdateDiskAnnConfiguration> for UpdateVectorIndexConfiguration {
+    fn from(config: UpdateDiskAnnConfiguration) -> Self {
+        UpdateVectorIndexConfiguration::DiskAnn(Some(config))
     }
 }
 
@@ -553,6 +741,7 @@ impl ChromaError for UpdateCollectionConfigurationToInternalConfigurationError {
 pub struct UpdateCollectionConfiguration {
     pub hnsw: Option<UpdateHnswConfiguration>,
     pub spann: Option<UpdateSpannConfiguration>,
+    pub diskann: Option<UpdateDiskAnnConfiguration>,
     pub embedding_function: Option<EmbeddingFunctionConfiguration>,
 }
 
@@ -584,23 +773,37 @@ impl TryFrom<UpdateCollectionConfiguration> for InternalUpdateCollectionConfigur
     type Error = UpdateCollectionConfigurationToInternalUpdateConfigurationError;
 
     fn try_from(value: UpdateCollectionConfiguration) -> Result<Self, Self::Error> {
-        match (value.hnsw, value.spann) {
-            (Some(_), Some(_)) => Err(Self::Error::MultipleVectorIndexConfigurations),
-            (Some(hnsw), None) => {
+        let count = usize::from(value.hnsw.is_some())
+            + usize::from(value.spann.is_some())
+            + usize::from(value.diskann.is_some());
+        if count > 1 {
+            return Err(Self::Error::MultipleVectorIndexConfigurations);
+        }
+
+        match (value.hnsw, value.spann, value.diskann) {
+            (Some(hnsw), None, None) => {
                 hnsw.validate()?;
                 Ok(InternalUpdateCollectionConfiguration {
                     vector_index: Some(UpdateVectorIndexConfiguration::Hnsw(Some(hnsw))),
                     embedding_function: value.embedding_function,
                 })
             }
-            (None, Some(spann)) => Ok(InternalUpdateCollectionConfiguration {
+            (None, Some(spann), None) => Ok(InternalUpdateCollectionConfiguration {
                 vector_index: Some(UpdateVectorIndexConfiguration::Spann(Some(spann))),
                 embedding_function: value.embedding_function,
             }),
-            (None, None) => Ok(InternalUpdateCollectionConfiguration {
+            (None, None, Some(diskann)) => {
+                diskann.validate()?;
+                Ok(InternalUpdateCollectionConfiguration {
+                    vector_index: Some(UpdateVectorIndexConfiguration::DiskAnn(Some(diskann))),
+                    embedding_function: value.embedding_function,
+                })
+            }
+            (None, None, None) => Ok(InternalUpdateCollectionConfiguration {
                 vector_index: None,
                 embedding_function: value.embedding_function,
             }),
+            _ => Err(Self::Error::MultipleVectorIndexConfigurations),
         }
     }
 }
@@ -675,6 +878,7 @@ mod tests {
             CollectionConfiguration {
                 hnsw: None,
                 spann: None,
+                diskann: None,
                 embedding_function: None,
             },
             KnnIndex::Hnsw,
@@ -701,6 +905,7 @@ mod tests {
             CollectionConfiguration {
                 hnsw: None,
                 spann: None,
+                diskann: None,
                 embedding_function: None,
             },
             KnnIndex::Hnsw,
@@ -734,6 +939,7 @@ mod tests {
         let collection_config = CollectionConfiguration {
             hnsw: Some(hnsw_config.clone()),
             spann: None,
+            diskann: None,
             embedding_function: None,
         };
 
@@ -766,6 +972,7 @@ mod tests {
         let collection_config = CollectionConfiguration {
             hnsw: Some(hnsw_config.clone()),
             spann: None,
+            diskann: None,
             embedding_function: None,
         };
 
@@ -802,6 +1009,7 @@ mod tests {
         let collection_config = CollectionConfiguration {
             hnsw: None,
             spann: Some(spann_config.clone()),
+            diskann: None,
             embedding_function: None,
         };
 
@@ -835,6 +1043,7 @@ mod tests {
         let collection_config = CollectionConfiguration {
             hnsw: None,
             spann: Some(spann_config.clone()),
+            diskann: None,
             embedding_function: None,
         };
 
@@ -860,6 +1069,7 @@ mod tests {
         let collection_config = CollectionConfiguration {
             hnsw: None,
             spann: None,
+            diskann: None,
             embedding_function: None,
         };
 
@@ -884,6 +1094,7 @@ mod tests {
         let collection_config = CollectionConfiguration {
             hnsw: None,
             spann: None,
+            diskann: None,
             embedding_function: None,
         };
 
@@ -917,6 +1128,7 @@ mod tests {
         let collection_config = CollectionConfiguration {
             hnsw: None,
             spann: None,
+            diskann: None,
             embedding_function: None,
         };
 
@@ -954,6 +1166,7 @@ mod tests {
         let collection_config = CollectionConfiguration {
             hnsw: None,
             spann: None,
+            diskann: None,
             embedding_function: None,
         };
 
@@ -996,6 +1209,7 @@ mod tests {
                 ..Default::default()
             }),
             spann: None,
+            diskann: None,
             embedding_function: None,
         };
         config.update(&update_config.try_into().unwrap());
@@ -1039,6 +1253,7 @@ mod tests {
                 ef_search: Some(1),
                 ..Default::default()
             }),
+            diskann: None,
             embedding_function: None,
         };
         config.update(&update_config.try_into().unwrap());
@@ -1083,6 +1298,7 @@ mod tests {
         let update_config = UpdateCollectionConfiguration {
             hnsw: None,
             spann: None,
+            diskann: None,
             embedding_function: Some(EmbeddingFunctionConfiguration::Known(emb_fn_config)),
         };
         config.update(&update_config.try_into().unwrap());
@@ -1299,6 +1515,7 @@ mod tests {
                 let collection_config = CollectionConfiguration {
                     hnsw: None,
                     spann: None,
+                    diskann: None,
                     embedding_function: embedding.clone(),
                 };
 
@@ -1332,6 +1549,7 @@ mod tests {
                 let collection_config = CollectionConfiguration {
                     hnsw: Some(HnswConfiguration::default()),
                     spann: None,
+                    diskann: None,
                     embedding_function: embedding.clone(),
                 };
 
@@ -1362,6 +1580,7 @@ mod tests {
                 let collection_config = CollectionConfiguration {
                     hnsw: Some(hnsw_config.clone().into()),
                     spann: None,
+                    diskann: None,
                     embedding_function: embedding,
                 };
 
@@ -1394,6 +1613,7 @@ mod tests {
                 let collection_config = CollectionConfiguration {
                     hnsw: None,
                     spann: Some(spann_config.clone().into()),
+                    diskann: None,
                     embedding_function: embedding,
                 };
 
@@ -1425,6 +1645,7 @@ mod tests {
                 let collection_config = CollectionConfiguration {
                     hnsw: None,
                     spann: None,
+                    diskann: None,
                     embedding_function: embedding.clone(),
                 };
 
@@ -1441,6 +1662,9 @@ mod tests {
                     }
                     (KnnIndex::Spann, VectorIndexConfiguration::Spann(spann)) => {
                         prop_assert_eq!(spann, &InternalSpannConfiguration::default());
+                    }
+                    (KnnIndex::DiskAnn, VectorIndexConfiguration::DiskAnn(diskann)) => {
+                        prop_assert_eq!(diskann, &InternalDiskAnnConfiguration::default());
                     }
                     _ => prop_assert!(false, "unexpected vector index variant"),
                 }
@@ -1459,6 +1683,7 @@ mod tests {
                 let collection_config = CollectionConfiguration {
                     hnsw: Some(hnsw_config.into()),
                     spann: Some(spann_config.into()),
+                    diskann: None,
                     embedding_function: embedding,
                 };
 

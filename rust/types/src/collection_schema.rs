@@ -15,16 +15,19 @@ use crate::hnsw_configuration::Space;
 use crate::metadata::{MetadataComparison, MetadataValueType, Where};
 use crate::operator::QueryVector;
 use crate::{
-    default_batch_size, default_center_drift_threshold, default_construction_ef,
-    default_construction_ef_spann, default_initial_lambda, default_m, default_m_spann,
-    default_merge_threshold, default_nreplica_count, default_num_centers_to_merge_to,
-    default_num_samples_kmeans, default_num_threads, default_reassign_neighbor_count,
-    default_resize_factor, default_search_ef, default_search_ef_spann, default_search_nprobe,
+    default_alpha, default_batch_size, default_beam_width, default_build_list_size,
+    default_center_drift_threshold, default_construction_ef, default_construction_ef_spann,
+    default_diskann_num_threads, default_graph_degree, default_initial_lambda, default_m,
+    default_m_spann, default_memory_budget_gb, default_merge_threshold, default_nreplica_count,
+    default_num_centers_to_merge_to, default_num_samples_kmeans, default_num_threads,
+    default_pq_bytes, default_reassign_neighbor_count, default_resize_factor, default_search_ef,
+    default_search_ef_spann, default_search_list_size, default_search_nprobe,
     default_search_rng_epsilon, default_search_rng_factor, default_space, default_split_threshold,
     default_sync_threshold, default_write_nprobe, default_write_rng_epsilon,
     default_write_rng_factor, ConversionError, HnswParametersFromSegmentError,
-    InternalHnswConfiguration, InternalSpannConfiguration, InternalUpdateCollectionConfiguration,
-    KnnIndex, Segment, UpdateCollectionConfiguration, CHROMA_KEY,
+    InternalDiskAnnConfiguration, InternalHnswConfiguration, InternalSpannConfiguration,
+    InternalUpdateCollectionConfiguration, KnnIndex, Segment, UpdateCollectionConfiguration,
+    CHROMA_KEY,
 };
 
 impl ChromaError for SchemaError {
@@ -46,6 +49,7 @@ impl ChromaError for SchemaError {
             SchemaError::ConfigAndSchemaConflict => ErrorCodes::InvalidArgument,
             SchemaError::InvalidHnswConfig(_) => ErrorCodes::InvalidArgument,
             SchemaError::InvalidSpannConfig(_) => ErrorCodes::InvalidArgument,
+            SchemaError::InvalidDiskAnnConfig(_) => ErrorCodes::InvalidArgument,
             SchemaError::Builder(e) => e.code(),
         }
     }
@@ -67,6 +71,8 @@ pub enum SchemaError {
     InvalidHnswConfig(validator::ValidationErrors),
     #[error("Invalid SPANN configuration: {0}")]
     InvalidSpannConfig(validator::ValidationErrors),
+    #[error("Invalid DiskANN configuration: {0}")]
+    InvalidDiskAnnConfig(validator::ValidationErrors),
     #[error("Invalid schema input: {reason}")]
     InvalidUserInput { reason: String },
     #[error("Invalid configuration update: {message}")]
@@ -398,6 +404,17 @@ impl Schema {
                 }
             }
             UpdateVectorIndexConfiguration::Spann(None) => {}
+            UpdateVectorIndexConfiguration::DiskAnn(Some(diskann_update)) => {
+                if let Some(diskann_config) = vector_index.config.diskann.as_mut() {
+                    if let Some(search_list_size) = diskann_update.search_list_size {
+                        diskann_config.search_list_size = Some(search_list_size);
+                    }
+                    if let Some(beam_width) = diskann_update.beam_width {
+                        diskann_config.beam_width = Some(beam_width);
+                    }
+                }
+            }
+            UpdateVectorIndexConfiguration::DiskAnn(None) => {}
         }
     }
 
@@ -574,6 +591,7 @@ impl Default for Schema {
                         source_key: None,
                         hnsw: None,  // Python doesn't specify
                         spann: None, // Python doesn't specify
+                        diskann: None,
                     },
                 }),
             }),
@@ -642,6 +660,7 @@ impl Default for Schema {
                             source_key: Some(DOCUMENT_KEY.to_string()),
                             hnsw: None,  // Python doesn't specify
                             spann: None, // Python doesn't specify
+                            diskann: None,
                         },
                     }),
                 }),
@@ -889,10 +908,10 @@ impl Schema {
                         sync_threshold: Some(default_sync_threshold()),
                         resize_factor: Some(default_resize_factor()),
                     }),
-                    KnnIndex::Spann => None,
+                    KnnIndex::Spann | KnnIndex::DiskAnn => None,
                 },
                 spann: match default_knn_index {
-                    KnnIndex::Hnsw => None,
+                    KnnIndex::Hnsw | KnnIndex::DiskAnn => None,
                     KnnIndex::Spann => Some(SpannIndexConfig {
                         search_nprobe: Some(default_search_nprobe()),
                         search_rng_factor: Some(default_search_rng_factor()),
@@ -913,6 +932,10 @@ impl Schema {
                         center_drift_threshold: None,
                         quantize: Quantization::None,
                     }),
+                },
+                diskann: match default_knn_index {
+                    KnnIndex::DiskAnn => Some(default_diskann_index_config()),
+                    KnnIndex::Hnsw | KnnIndex::Spann => None,
                 },
             },
         };
@@ -985,10 +1008,10 @@ impl Schema {
                                 sync_threshold: Some(default_sync_threshold()),
                                 resize_factor: Some(default_resize_factor()),
                             }),
-                            KnnIndex::Spann => None,
+                            KnnIndex::Spann | KnnIndex::DiskAnn => None,
                         },
                         spann: match default_knn_index {
-                            KnnIndex::Hnsw => None,
+                            KnnIndex::Hnsw | KnnIndex::DiskAnn => None,
                             KnnIndex::Spann => Some(SpannIndexConfig {
                                 search_nprobe: Some(default_search_nprobe()),
                                 search_rng_factor: Some(default_search_rng_factor()),
@@ -1009,6 +1032,10 @@ impl Schema {
                                 center_drift_threshold: None,
                                 quantize: Quantization::None,
                             }),
+                        },
+                        diskann: match default_knn_index {
+                            KnnIndex::DiskAnn => Some(default_diskann_index_config()),
+                            KnnIndex::Hnsw | KnnIndex::Spann => None,
                         },
                     },
                 }),
@@ -1093,6 +1120,7 @@ impl Schema {
                             resize_factor: Some(default_resize_factor()),
                         }),
                         spann: None,
+                        diskann: None,
                     },
                 }),
             }),
@@ -1130,6 +1158,7 @@ impl Schema {
                             resize_factor: Some(default_resize_factor()),
                         }),
                         spann: None,
+                        diskann: None,
                     },
                 }),
             }),
@@ -1190,6 +1219,54 @@ impl Schema {
             vector_index
                 .config
                 .spann
+                .clone()
+                .map(|config| (space.as_ref(), &config).into())
+        };
+
+        self.keys
+            .get(EMBEDDING_KEY)
+            .and_then(|value_types| value_types.float_list.as_ref())
+            .and_then(|float_list| float_list.vector_index.as_ref())
+            .and_then(to_internal)
+            .or_else(|| {
+                self.defaults
+                    .float_list
+                    .as_ref()
+                    .and_then(|float_list| float_list.vector_index.as_ref())
+                    .and_then(to_internal)
+            })
+    }
+
+    pub fn get_diskann_config(&self) -> Option<(DiskAnnIndexConfig, Space)> {
+        let extract = |vector_index: &VectorIndexType| {
+            let space = vector_index.config.space.clone().unwrap_or_default();
+            vector_index
+                .config
+                .diskann
+                .clone()
+                .map(|config| (config, space))
+        };
+
+        self.keys
+            .get(EMBEDDING_KEY)
+            .and_then(|value_types| value_types.float_list.as_ref())
+            .and_then(|float_list| float_list.vector_index.as_ref())
+            .and_then(extract)
+            .or_else(|| {
+                self.defaults
+                    .float_list
+                    .as_ref()
+                    .and_then(|float_list| float_list.vector_index.as_ref())
+                    .and_then(extract)
+            })
+    }
+
+    pub fn get_internal_diskann_config(&self) -> Option<InternalDiskAnnConfiguration> {
+        let to_internal = |vector_index: &VectorIndexType| {
+            let space = vector_index.config.space.clone();
+            vector_index
+                .config
+                .diskann
                 .clone()
                 .map(|config| (space.as_ref(), &config).into())
         };
@@ -1293,7 +1370,7 @@ impl Schema {
 
     pub fn get_internal_hnsw_config(&self) -> Option<InternalHnswConfiguration> {
         let to_internal = |vector_index: &VectorIndexType| {
-            if vector_index.config.spann.is_some() {
+            if vector_index.config.spann.is_some() || vector_index.config.diskann.is_some() {
                 return None;
             }
             let space = vector_index.config.space.as_ref();
@@ -1837,6 +1914,11 @@ impl Schema {
             if let Some(spann) = &vector_index.config.spann {
                 spann.validate().map_err(SchemaError::InvalidSpannConfig)?;
             }
+            if let Some(diskann) = &vector_index.config.diskann {
+                diskann
+                    .validate()
+                    .map_err(SchemaError::InvalidDiskAnnConfig)?;
+            }
         }
         Ok(())
     }
@@ -1857,6 +1939,7 @@ impl Schema {
                 source_key: user.source_key.clone().or(default.source_key.clone()),
                 hnsw: Self::merge_hnsw_configs(default.hnsw.as_ref(), user.hnsw.as_ref()),
                 spann: None,
+                diskann: None,
             }),
             KnnIndex::Spann => Ok(VectorIndexConfig {
                 space: user.space.clone().or(default.space.clone()),
@@ -1867,6 +1950,21 @@ impl Schema {
                 source_key: user.source_key.clone().or(default.source_key.clone()),
                 hnsw: None,
                 spann: Self::merge_spann_configs(default.spann.as_ref(), user.spann.as_ref())?,
+                diskann: None,
+            }),
+            KnnIndex::DiskAnn => Ok(VectorIndexConfig {
+                space: user.space.clone().or(default.space.clone()),
+                embedding_function: user
+                    .embedding_function
+                    .clone()
+                    .or(default.embedding_function.clone()),
+                source_key: user.source_key.clone().or(default.source_key.clone()),
+                hnsw: None,
+                spann: None,
+                diskann: Self::merge_diskann_configs(
+                    default.diskann.as_ref(),
+                    user.diskann.as_ref(),
+                )?,
             }),
         }
     }
@@ -1972,6 +2070,28 @@ impl Schema {
                 }
                 Ok(Some(user.clone()))
             }
+            (None, None) => Ok(None),
+        }
+    }
+
+    /// Merge DiskANN configurations with field-level merging
+    fn merge_diskann_configs(
+        default_diskann: Option<&DiskAnnIndexConfig>,
+        user_diskann: Option<&DiskAnnIndexConfig>,
+    ) -> Result<Option<DiskAnnIndexConfig>, SchemaError> {
+        match (default_diskann, user_diskann) {
+            (Some(default), Some(user)) => Ok(Some(DiskAnnIndexConfig {
+                graph_degree: user.graph_degree.or(default.graph_degree),
+                build_list_size: user.build_list_size.or(default.build_list_size),
+                search_list_size: user.search_list_size.or(default.search_list_size),
+                beam_width: user.beam_width.or(default.beam_width),
+                pq_bytes: user.pq_bytes.or(default.pq_bytes),
+                num_threads: user.num_threads.or(default.num_threads),
+                memory_budget_gb: user.memory_budget_gb.or(default.memory_budget_gb),
+                alpha: user.alpha.or(default.alpha),
+            })),
+            (Some(default), None) => Ok(Some(default.clone())),
+            (None, Some(user)) => Ok(Some(user.clone())),
             (None, None) => Ok(None),
         }
     }
@@ -2161,21 +2281,29 @@ impl Schema {
                 if vector_index.config.source_key.is_some() {
                     return false;
                 }
-                // Check that either hnsw or spann config is present (not both, not neither)
-                // and that the config values are default
-                match (&vector_index.config.hnsw, &vector_index.config.spann) {
-                    (Some(hnsw_config), None) => {
+                // Check that at most one vector index config is present and defaults hold
+                match (
+                    &vector_index.config.hnsw,
+                    &vector_index.config.spann,
+                    &vector_index.config.diskann,
+                ) {
+                    (Some(hnsw_config), None, None) => {
                         if !hnsw_config.is_default() {
                             return false;
                         }
                     }
-                    (None, Some(spann_config)) => {
+                    (None, Some(spann_config), None) => {
                         if !spann_config.is_default() {
                             return false;
                         }
                     }
-                    (Some(_), Some(_)) => return false, // Both present
-                    (None, None) => {}
+                    (None, None, Some(diskann_config)) => {
+                        if !diskann_config.is_default() {
+                            return false;
+                        }
+                    }
+                    (None, None, None) => {}
+                    _ => return false,
                 }
             }
         }
@@ -2233,21 +2361,28 @@ impl Schema {
                 if vector_index.config.source_key.as_deref() != Some(DOCUMENT_KEY) {
                     return false;
                 }
-                // Check that either hnsw or spann config is present (not both, not neither)
-                // and that the config values are default
-                match (&vector_index.config.hnsw, &vector_index.config.spann) {
-                    (Some(hnsw_config), None) => {
+                match (
+                    &vector_index.config.hnsw,
+                    &vector_index.config.spann,
+                    &vector_index.config.diskann,
+                ) {
+                    (Some(hnsw_config), None, None) => {
                         if !hnsw_config.is_default() {
                             return false;
                         }
                     }
-                    (None, Some(spann_config)) => {
+                    (None, Some(spann_config), None) => {
                         if !spann_config.is_default() {
                             return false;
                         }
                     }
-                    (Some(_), Some(_)) => return false, // Both present
-                    (None, None) => {}
+                    (None, None, Some(diskann_config)) => {
+                        if !diskann_config.is_default() {
+                            return false;
+                        }
+                    }
+                    (None, None, None) => {}
+                    _ => return false,
                 }
             }
         }
@@ -2964,6 +3099,9 @@ pub struct VectorIndexConfig {
     /// SPANN algorithm configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spann: Option<SpannIndexConfig>,
+    /// DiskANN algorithm configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diskann: Option<DiskAnnIndexConfig>,
 }
 
 /// Configuration for HNSW vector index algorithm parameters
@@ -3030,6 +3168,90 @@ impl HnswIndexConfig {
         }
         // Skip num_threads check as it's system-dependent
         true
+    }
+}
+
+/// Configuration for DiskANN vector index algorithm parameters
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Validate, Default)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DiskAnnIndexConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(range(min = 4, max = 256))]
+    pub graph_degree: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(range(min = 10, max = 1024))]
+    pub build_list_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(range(min = 10, max = 1024))]
+    pub search_list_size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(range(min = 1, max = 64))]
+    pub beam_width: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(range(max = 64))]
+    pub pq_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_threads: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(range(min = 0.1, max = 1024.0))]
+    pub memory_budget_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(range(min = 1.0, max = 2.0))]
+    pub alpha: Option<f32>,
+}
+
+impl DiskAnnIndexConfig {
+    pub fn is_default(&self) -> bool {
+        if let Some(graph_degree) = self.graph_degree {
+            if graph_degree != default_graph_degree() {
+                return false;
+            }
+        }
+        if let Some(build_list_size) = self.build_list_size {
+            if build_list_size != default_build_list_size() {
+                return false;
+            }
+        }
+        if let Some(search_list_size) = self.search_list_size {
+            if search_list_size != default_search_list_size() {
+                return false;
+            }
+        }
+        if let Some(beam_width) = self.beam_width {
+            if beam_width != default_beam_width() {
+                return false;
+            }
+        }
+        if let Some(pq_bytes) = self.pq_bytes {
+            if pq_bytes != default_pq_bytes() {
+                return false;
+            }
+        }
+        if let Some(memory_budget_gb) = self.memory_budget_gb {
+            if memory_budget_gb != default_memory_budget_gb() {
+                return false;
+            }
+        }
+        if let Some(alpha) = self.alpha {
+            if alpha != default_alpha() {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+pub fn default_diskann_index_config() -> DiskAnnIndexConfig {
+    DiskAnnIndexConfig {
+        graph_degree: Some(default_graph_degree()),
+        build_list_size: Some(default_build_list_size()),
+        search_list_size: Some(default_search_list_size()),
+        beam_width: Some(default_beam_width()),
+        pq_bytes: Some(default_pq_bytes()),
+        num_threads: Some(default_diskann_num_threads()),
+        memory_budget_gb: Some(default_memory_budget_gb()),
+        alpha: Some(default_alpha()),
     }
 }
 
@@ -3375,6 +3597,7 @@ impl TryFrom<&InternalCollectionConfiguration> for Schema {
         let mut schema = match &config.vector_index {
             VectorIndexConfiguration::Hnsw(_) => Schema::new_default(KnnIndex::Hnsw),
             VectorIndexConfiguration::Spann(_) => Schema::new_default(KnnIndex::Spann),
+            VectorIndexConfiguration::DiskAnn(_) => Schema::new_default(KnnIndex::DiskAnn),
         };
         // Convert vector index configuration
         let vector_config = match &config.vector_index {
@@ -3392,6 +3615,7 @@ impl TryFrom<&InternalCollectionConfiguration> for Schema {
                     resize_factor: Some(hnsw_config.resize_factor),
                 }),
                 spann: None,
+                diskann: None,
             },
             VectorIndexConfiguration::Spann(spann_config) => VectorIndexConfig {
                 space: Some(spann_config.space.clone()),
@@ -3417,6 +3641,24 @@ impl TryFrom<&InternalCollectionConfiguration> for Schema {
                     max_neighbors: Some(spann_config.max_neighbors),
                     center_drift_threshold: None,
                     quantize: Quantization::None,
+                }),
+                diskann: None,
+            },
+            VectorIndexConfiguration::DiskAnn(diskann_config) => VectorIndexConfig {
+                space: Some(diskann_config.space.clone()),
+                embedding_function: config.embedding_function.clone(),
+                source_key: None,
+                hnsw: None,
+                spann: None,
+                diskann: Some(DiskAnnIndexConfig {
+                    graph_degree: Some(diskann_config.graph_degree),
+                    build_list_size: Some(diskann_config.build_list_size),
+                    search_list_size: Some(diskann_config.search_list_size),
+                    beam_width: Some(diskann_config.beam_width),
+                    pq_bytes: Some(diskann_config.pq_bytes),
+                    num_threads: Some(diskann_config.num_threads),
+                    memory_budget_gb: Some(diskann_config.memory_budget_gb),
+                    alpha: Some(diskann_config.alpha),
                 }),
             },
         };
@@ -3630,6 +3872,7 @@ mod tests {
                         resize_factor: None,
                     }),
                     spann: None,
+                    diskann: None,
                 },
             }),
         });
@@ -3759,6 +4002,7 @@ mod tests {
                         source_key: Some("custom_embedding_key".to_string()),
                         hnsw: None,
                         spann: None,
+                        diskann: None,
                     },
                 }),
             }),
@@ -4361,6 +4605,7 @@ mod tests {
                 resize_factor: Some(1.2),
             }),
             spann: None,
+            diskann: None,
         };
 
         let user_config = VectorIndexConfig {
@@ -4396,6 +4641,7 @@ mod tests {
                 center_drift_threshold: None,
                 quantize: Quantization::None,
             }), // Add SPANN config
+            diskann: None,
         };
 
         let result =
@@ -4678,6 +4924,7 @@ mod tests {
                         resize_factor: None,
                     }),
                     spann: None,
+                    diskann: None,
                 },
             }),
         });
@@ -6309,6 +6556,7 @@ mod tests {
                         resize_factor: None,
                     }),
                     spann: None,
+                    diskann: None,
                 }),
             )
             .expect("vector config should succeed")
@@ -6454,6 +6702,7 @@ mod tests {
                 source_key: None,
                 hnsw: None,
                 spann: None,
+                diskann: None,
             }),
         );
         assert!(result.is_err());
@@ -6583,6 +6832,7 @@ mod tests {
                 source_key: None,
                 hnsw: None,
                 spann: None,
+                diskann: None,
             }),
         );
         assert!(result.is_err());
@@ -7294,6 +7544,20 @@ mod tests {
                             }
                         }
                     }
+                    KnnIndex::DiskAnn => {
+                        if let (Some(_base_diskann), Some(user_diskann)) =
+                            (&base.diskann, &user.diskann)
+                        {
+                            let merged_diskann =
+                                merged.diskann.as_ref().expect("diskann should be Some");
+                            if user_diskann.search_list_size.is_some() {
+                                prop_assert_eq!(
+                                    merged_diskann.search_list_size,
+                                    user_diskann.search_list_size
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -7316,6 +7580,7 @@ mod tests {
                         resize_factor: Some(hnsw_config.resize_factor),
                     }),
                     spann: None,
+                    diskann: None,
                 },
                 VectorIndexConfiguration::Spann(spann_config) => VectorIndexConfig {
                     space: Some(spann_config.space.clone()),
@@ -7341,6 +7606,24 @@ mod tests {
                         max_neighbors: Some(spann_config.max_neighbors),
                         center_drift_threshold: None,
                         quantize: Quantization::None,
+                    }),
+                    diskann: None,
+                },
+                VectorIndexConfiguration::DiskAnn(diskann_config) => VectorIndexConfig {
+                    space: Some(diskann_config.space.clone()),
+                    embedding_function: config.embedding_function.clone(),
+                    source_key: None,
+                    hnsw: None,
+                    spann: None,
+                    diskann: Some(DiskAnnIndexConfig {
+                        graph_degree: Some(diskann_config.graph_degree),
+                        build_list_size: Some(diskann_config.build_list_size),
+                        search_list_size: Some(diskann_config.search_list_size),
+                        beam_width: Some(diskann_config.beam_width),
+                        pq_bytes: Some(diskann_config.pq_bytes),
+                        num_threads: Some(diskann_config.num_threads),
+                        memory_budget_gb: Some(diskann_config.memory_budget_gb),
+                        alpha: Some(diskann_config.alpha),
                     }),
                 },
             }
@@ -7488,6 +7771,42 @@ mod tests {
             })
         }
 
+        fn diskann_index_config_strategy() -> impl Strategy<Value = DiskAnnIndexConfig> {
+            (
+                4usize..=256,
+                10usize..=1024,
+                10u32..=1024,
+                1usize..=64,
+                0usize..=64,
+                1usize..=16,
+                0.1f64..=1024.0,
+                1.0f32..=2.0,
+            )
+                .prop_map(
+                    |(
+                        graph_degree,
+                        build_list_size,
+                        search_list_size,
+                        beam_width,
+                        pq_bytes,
+                        num_threads,
+                        memory_budget_gb,
+                        alpha,
+                    )| {
+                        DiskAnnIndexConfig {
+                            graph_degree: Some(graph_degree),
+                            build_list_size: Some(build_list_size),
+                            search_list_size: Some(search_list_size),
+                            beam_width: Some(beam_width),
+                            pq_bytes: Some(pq_bytes),
+                            num_threads: Some(num_threads),
+                            memory_budget_gb: Some(memory_budget_gb),
+                            alpha: Some(alpha),
+                        }
+                    },
+                )
+        }
+
         fn spann_index_config_strategy() -> impl Strategy<Value = SpannIndexConfig> {
             internal_spann_configuration_strategy().prop_map(|config| SpannIndexConfig {
                 search_nprobe: Some(config.search_nprobe),
@@ -7518,14 +7837,16 @@ mod tests {
                 source_key_strategy(),
                 proptest::option::of(hnsw_index_config_strategy()),
                 proptest::option::of(spann_index_config_strategy()),
+                proptest::option::of(diskann_index_config_strategy()),
             )
-                .prop_map(|(space, embedding_function, source_key, hnsw, spann)| {
+                .prop_map(|(space, embedding_function, source_key, hnsw, spann, diskann)| {
                     VectorIndexConfig {
                         space,
                         embedding_function,
                         source_key,
                         hnsw,
                         spann,
+                        diskann,
                     }
                 })
         }
@@ -7719,6 +8040,20 @@ mod tests {
                                     }
                                 }
                             }
+                            KnnIndex::DiskAnn => {
+                                if let Some(schema_diskann) = &schema_vi.config.diskann {
+                                    if let Some(merged_diskann) = &defaults_vi.diskann {
+                                        if let Some(schema_search_list_size) =
+                                            schema_diskann.search_list_size
+                                        {
+                                            prop_assert_eq!(
+                                                merged_diskann.search_list_size,
+                                                Some(schema_search_list_size)
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -7746,6 +8081,7 @@ mod tests {
                 let mut config = match knn {
                     KnnIndex::Hnsw => InternalCollectionConfiguration::default_hnsw(),
                     KnnIndex::Spann => InternalCollectionConfiguration::default_spann(),
+                    KnnIndex::DiskAnn => InternalCollectionConfiguration::default_diskann(),
                 };
                 config.embedding_function = embedding_function.clone();
 
@@ -7779,6 +8115,7 @@ mod tests {
                 let default_config = match knn {
                     KnnIndex::Hnsw => InternalCollectionConfiguration::default_hnsw(),
                     KnnIndex::Spann => InternalCollectionConfiguration::default_spann(),
+                    KnnIndex::DiskAnn => InternalCollectionConfiguration::default_diskann(),
                 };
 
                 let result = Schema::reconcile_schema_and_config(

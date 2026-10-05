@@ -6,6 +6,7 @@ pub mod bloom_filter;
 pub mod distributed_hnsw;
 pub mod distributed_spann;
 pub mod local_hnsw;
+pub mod local_diskann;
 pub mod local_segment_manager;
 #[cfg(feature = "usearch")]
 pub mod quantized_spann;
