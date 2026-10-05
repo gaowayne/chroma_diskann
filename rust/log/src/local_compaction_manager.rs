@@ -88,6 +88,8 @@ pub enum CompactionManagerError {
     GetHnswWriterFailed,
     #[error("Failed to apply logs to the hnsw segment writer")]
     HnswApplyLogsError,
+    #[error("Failed to apply logs to the DiskANN segment writer: {0}")]
+    DiskAnnApplyLogsError(String),
     #[error("Error getting collection with segments: {0}")]
     GetCollectionWithSegmentsError(#[from] GetCollectionWithSegmentsError),
     #[error("Error reading from metadata segment reader: {0} ")]
@@ -111,6 +113,7 @@ impl ChromaError for CompactionManagerError {
             CompactionManagerError::MetadataApplyLogsFailed => ErrorCodes::Internal,
             CompactionManagerError::GetHnswWriterFailed => ErrorCodes::Internal,
             CompactionManagerError::HnswApplyLogsError => ErrorCodes::Internal,
+            CompactionManagerError::DiskAnnApplyLogsError(_) => ErrorCodes::Internal,
             CompactionManagerError::GetCollectionWithSegmentsError(e) => e.code(),
             CompactionManagerError::MetadataReaderError(e) => e.code(),
             CompactionManagerError::HnswReaderError(e) => e.code(),
@@ -285,7 +288,7 @@ impl Handler<BackfillMessage> for LocalCompactionManager {
             diskann_writer
                 .apply_log_chunk(hnsw_data_chunk)
                 .await
-                .map_err(|_| CompactionManagerError::HnswApplyLogsError)?;
+                .map_err(|e| CompactionManagerError::DiskAnnApplyLogsError(e.to_string()))?;
         } else {
             let mut hnsw_writer = self
                 .hnsw_segment_manager

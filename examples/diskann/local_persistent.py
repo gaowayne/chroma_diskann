@@ -34,7 +34,6 @@ def main() -> None:
             "diskann": {
                 "graph_degree": 32,
                 "search_list_size": 64,
-                "pq_bytes": 0,
             }
         },
         embedding_function=None,
@@ -43,16 +42,16 @@ def main() -> None:
     print("collection configuration:", col.configuration)
 
     print("\n=== step 1: small N (<256), exact scan ===")
-    col.add(ids=["a", "b"], embeddings=[[0.1, 0.2], [0.3, 0.4]])
-    small = col.query(query_embeddings=[[0.1, 0.2]], n_results=1)
+    col.add(ids=["a", "b"], embeddings=[[0.1, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.3, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+    small = col.query(query_embeddings=[[0.1, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]], n_results=1)
     print("small-n query ids:", small["ids"])
     print("native dirs after small add:", _native_dirs(persist_dir))
 
     print("\n=== step 2: upsert 256 vectors, native DiskANN build + search ===")
     ids = [f"id-{i}" for i in range(256)]
-    embeddings = [[float(i), float(i + 1)] for i in range(256)]
+    embeddings = [[float(i), float(i + 1), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] for i in range(256)]
     col.upsert(ids=ids, embeddings=embeddings)
-    large = col.query(query_embeddings=[[0.0, 1.0]], n_results=3)
+    large = col.query(query_embeddings=[[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]], n_results=3)
     print("large-n query ids:", large["ids"])
 
     native_dirs = _native_dirs(persist_dir)

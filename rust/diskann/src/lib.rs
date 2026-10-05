@@ -1,4 +1,4 @@
-use std::{
+﻿use std::{
     borrow::Cow,
     fs::{self, File, OpenOptions},
     io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
@@ -347,7 +347,7 @@ pub fn build_index(
         MemoryBudget::try_from_gb(options.memory_budget_gb).map_err(native_error)?,
         QuantizationType::FP,
         NumPQChunks::new_with(
-            options.pq_bytes.min(dimensions as usize),
+            options.pq_bytes.max(1).min(dimensions as usize),
             dimensions as usize,
         )
         .map_err(native_error)?,
@@ -405,7 +405,6 @@ fn validate_build(
     if options.graph_degree == 0
         || options.graph_degree >= vectors.len()
         || options.search_list_size < options.graph_degree
-        || options.pq_bytes == 0
         || options.num_threads == 0
         || !options.memory_budget_gb.is_finite()
         || options.memory_budget_gb <= 0.0
