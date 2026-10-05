@@ -30,10 +30,17 @@ def main() -> None:
 
     col = client.create_collection(
         name="diskann_demo",
-        configuration={"diskann": {"graph_degree": 32, "search_list_size": 64}},
+        configuration={
+            "diskann": {
+                "graph_degree": 32,
+                "search_list_size": 64,
+                "pq_bytes": 0,
+            }
+        },
         embedding_function=None,
     )
     print("created collection with diskann config")
+    print("collection configuration:", col.configuration)
 
     print("\n=== step 1: small N (<256), exact scan ===")
     col.add(ids=["a", "b"], embeddings=[[0.1, 0.2], [0.3, 0.4]])

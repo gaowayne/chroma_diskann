@@ -2111,6 +2111,14 @@ impl Schema {
         // 1. Check if collection config is default
         if collection_config.is_default() {
             if schema.is_default() {
+                // DiskANN with default params is still an explicit index choice. Using
+                // `new_default(default_knn_index)` would rewrite it to HNSW on local.
+                if matches!(
+                    collection_config.vector_index,
+                    VectorIndexConfiguration::DiskAnn(_)
+                ) {
+                    return Self::try_from(collection_config);
+                }
                 // if both are default, use the schema, and apply the ef from config if available
                 // for both defaults and #embedding key
                 let mut new_schema = Schema::new_default(default_knn_index);

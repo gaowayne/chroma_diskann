@@ -461,43 +461,13 @@ impl InternalCollectionConfiguration {
                         HnswParametersFromSegmentError::InvalidParameters(err),
                     )
                 })?;
-                match default_knn_index {
-                    KnnIndex::Hnsw => {
-                        let internal_config = if let Some(space) = diskann.space {
-                            InternalHnswConfiguration {
-                                space,
-                                ..Default::default()
-                            }
-                        } else {
-                            InternalHnswConfiguration::default()
-                        };
-                        Ok(InternalCollectionConfiguration {
-                            vector_index: VectorIndexConfiguration::Hnsw(internal_config),
-                            embedding_function: value.embedding_function,
-                        })
-                    }
-                    KnnIndex::Spann => {
-                        let internal_config = if let Some(space) = diskann.space {
-                            InternalSpannConfiguration {
-                                space,
-                                ..Default::default()
-                            }
-                        } else {
-                            InternalSpannConfiguration::default()
-                        };
-                        Ok(InternalCollectionConfiguration {
-                            vector_index: VectorIndexConfiguration::Spann(internal_config),
-                            embedding_function: value.embedding_function,
-                        })
-                    }
-                    KnnIndex::DiskAnn => {
-                        let diskann: InternalDiskAnnConfiguration = diskann.into();
-                        Ok(InternalCollectionConfiguration {
-                            vector_index: diskann.into(),
-                            embedding_function: value.embedding_function,
-                        })
-                    }
-                }
+                // Explicit DiskANN must stay DiskANN. Local PersistentClient defaults to
+                // HNSW; converting here would silently create an HNSW collection.
+                let diskann: InternalDiskAnnConfiguration = diskann.into();
+                Ok(InternalCollectionConfiguration {
+                    vector_index: diskann.into(),
+                    embedding_function: value.embedding_function,
+                })
             }
             (None, None, None) => {
                 let vector_index = match default_knn_index {
@@ -1330,6 +1300,42 @@ mod tests {
         hnsw.max_neighbors = Some(129);
 
         assert!(InternalCollectionConfiguration::try_from(&schema).is_err());
+    }
+
+    #[test]
+    fn try_from_config_keeps_explicit_diskann_when_default_knn_is_hnsw() {
+        let collection_config = CollectionConfiguration {
+            hnsw: None,
+            spann: None,
+            diskann: Some(DiskAnnConfiguration {
+                space: None,
+                graph_degree: Some(32),
+                build_list_size: None,
+                search_list_size: Some(64),
+                beam_width: None,
+                pq_bytes: Some(0),
+                num_threads: None,
+                memory_budget_gb: None,
+                alpha: None,
+            }),
+            embedding_function: None,
+        };
+
+        let result = InternalCollectionConfiguration::try_from_config(
+            collection_config,
+            KnnIndex::Hnsw,
+            None,
+        )
+        .expect("explicit DiskANN should not be rewritten to HNSW");
+
+        match result.vector_index {
+            VectorIndexConfiguration::DiskAnn(config) => {
+                assert_eq!(config.graph_degree, 32);
+                assert_eq!(config.search_list_size, 64);
+                assert_eq!(config.pq_bytes, 0);
+            }
+            other => panic!("expected DiskAnn, got {other:?}"),
+        }
     }
 
     #[cfg(feature = "testing")]
